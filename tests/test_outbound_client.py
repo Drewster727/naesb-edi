@@ -14,6 +14,7 @@ from app.settings import (
     CryptoConfig,
     EnvelopeConfig,
     IdentityConfig,
+    InternalApiConfig,
     OutboundConfig,
     ServerConfig,
     Settings,
@@ -52,6 +53,9 @@ def settings(gnupg_home, monkeypatch):
         ),
         envelope=EnvelopeConfig(header_mapping=_header_mapping()),
         sinks=SinksConfig(),
+        internal_api=InternalApiConfig(
+            username_env="TEST_INTERNAL_API_USERNAME", password_env="TEST_INTERNAL_API_PASSWORD"
+        ),
         outbound=OutboundConfig(timeout_seconds=5, retry_max_attempts=2, retry_backoff_seconds=0),
         partners_file="unused",
     )

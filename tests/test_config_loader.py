@@ -24,6 +24,10 @@ VALID_CONFIG = {
         }
     },
     "database": {"url_env": "TEST_DATABASE_URL"},
+    "internal_api": {
+        "username_env": "TEST_INTERNAL_API_USERNAME",
+        "password_env": "TEST_INTERNAL_API_PASSWORD",
+    },
     "partners_file": "/app/config/partners.yaml",
 }
 

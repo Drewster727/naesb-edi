@@ -131,6 +131,23 @@ def _with_credentials(url: str, username: str | None, password: str | None) -> s
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
+class InternalApiConfig(BaseModel):
+    """Basic auth credentials protecting internal-only endpoints (e.g.
+    GET /api/partners) -- distinct from any partner's inbound_auth/
+    outbound_auth in partners.yaml."""
+
+    username_env: str
+    password_env: str
+
+    @property
+    def username(self) -> str:
+        return resolve_env(self.username_env)
+
+    @property
+    def password(self) -> str:
+        return resolve_env(self.password_env)
+
+
 class OutboundConfig(BaseModel):
     timeout_seconds: float = 30.0
     retry_max_attempts: int = 3
@@ -149,6 +166,7 @@ class Settings(BaseModel):
     envelope: EnvelopeConfig
     sinks: SinksConfig = Field(default_factory=SinksConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    internal_api: InternalApiConfig
     outbound: OutboundConfig = Field(default_factory=OutboundConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     partners_file: str

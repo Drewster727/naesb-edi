@@ -38,8 +38,10 @@ class S3Sink:
             return SinkResult(sink_name=self.name, ok=False, error=str(exc))
 
     def _put(self, message: InboundMessage) -> None:
+        # Keyed by DUNS (the canonical wire identifier, message.envelope.from_id)
+        # rather than the partner's config-file name label.
         key = (
-            f"{self.prefix}{message.partner_name}/"
+            f"{self.prefix}{message.envelope.from_id}/"
             f"{message.received_at.strftime('%Y%m%dT%H%M%SZ')}"
             f"_{message.content_digest[:16]}"
             f"_{message.envelope.transaction_set}.edi"

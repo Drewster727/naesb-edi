@@ -20,7 +20,9 @@ class FilesystemSink:
             return SinkResult(sink_name=self.name, ok=False, error=str(exc))
 
     def _write(self, message: InboundMessage) -> None:
-        partner_dir = self.base_dir / message.partner_name
+        # Keyed by DUNS (the canonical wire identifier, message.envelope.from_id)
+        # rather than the partner's config-file name label.
+        partner_dir = self.base_dir / message.envelope.from_id
         partner_dir.mkdir(parents=True, exist_ok=True)
         filename = (
             f"{message.received_at.strftime('%Y%m%dT%H%M%SZ')}"

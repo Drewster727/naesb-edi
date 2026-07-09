@@ -19,7 +19,7 @@ This replaces an AS2-based gateway (AS2 is not what NAESB 4.0 uses) with a purpo
 - **FastAPI** inbound HTTP server (`app/inbound/routes.py`) + **httpx** outbound client (`app/outbound/client.py`).
 - **python-gnupg** (wraps system `gpg`) for all OpenPGP operations (`app/crypto/`).
 - Config is split like OpenAS2's `config.xml`/`partnerships.xml`, as YAML: `config/config.yaml` (global identity, crypto, server, sinks, DB, logging) and `config/partners.yaml` (per-partner endpoint, keys, auth, envelope overrides).
-- Inbound delivery fans out to any combination of: local filesystem, an S3-compatible bucket (AWS/MinIO/Wasabi), and a webhook. Filesystem and S3 are "durable" by default; at least one durable sink must succeed for the transmission to be acknowledged.
+- Inbound delivery fans out to any combination of: local filesystem, an S3-compatible bucket (AWS/MinIO/Wasabi), and a webhook. Filesystem and S3 are "durable" by default; at least one durable sink must succeed for the transmission to be acknowledged. Both are keyed by the sending partner's DUNS (`{base_dir|prefix}/{duns}/{timestamp}_{digest[:16]}_{transaction_set}.edi`), not the partner's config-file name label.
 - Every inbound and outbound transmission is tracked in Postgres (`messages` table) in addition to structured JSON logs.
 - Dedup/idempotency keys off a SHA-256 digest of the raw (encrypted) request body -- the transport defines no message-id header.
 
@@ -62,6 +62,7 @@ uvicorn app.main:app --reload
 
 - `POST {server.inbound_path}` (default `/inbound`) -- receives a transmission from a trading partner. Returns an OpenPGP-signed receipt body (HTTP 200 in all cases past transport-level auth; the signed `receipt-status`/`error-code` is the actual accept/reject signal).
 - `POST /outbound/send` -- internal trigger to send a transmission to a partner. Body: `{"partner_name": ..., "input_format": "X12"|"XML"|"FLATFILE", "transaction_set": "873", "payload_base64": "..."}`.
+- `GET /api/partners` -- lists configured trading partners (`name`, `duns`, `endpoint_url`, `has_envelope_overrides`); never returns auth credentials or key paths. Protected by HTTP Basic auth against `internal_api.username_env`/`password_env` in `config.yaml` -- a separate credential pair from any partner's `inbound_auth`/`outbound_auth`.
 - `GET /healthz`, `GET /readyz`.
 
 ## Testing

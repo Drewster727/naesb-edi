@@ -5,7 +5,7 @@ from pathlib import Path
 import structlog
 from fastapi import FastAPI
 
-from app.api import health, send
+from app.api import health, partners as partners_api, send
 from app.crypto.gpg_wrapper import GpgService
 from app.crypto.keyring import bootstrap_keyring
 from app.errors import register_exception_handlers
@@ -102,6 +102,7 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
     app.include_router(health.router)
     app.include_router(send.router)
+    app.include_router(partners_api.router)
     app.include_router(inbound_routes.router, prefix=settings.server.inbound_path)
     return app
 

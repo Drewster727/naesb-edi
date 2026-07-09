@@ -23,6 +23,7 @@ from app.settings import (
     CryptoConfig,
     EnvelopeConfig,
     IdentityConfig,
+    InternalApiConfig,
     ServerConfig,
     Settings,
     SinksConfig,
@@ -62,6 +63,9 @@ def settings(gnupg_home, monkeypatch):
         ),
         envelope=EnvelopeConfig(header_mapping=_header_mapping()),
         sinks=SinksConfig(require_at_least_one_durable_success=True),
+        internal_api=InternalApiConfig(
+            username_env="TEST_INTERNAL_API_USERNAME", password_env="TEST_INTERNAL_API_PASSWORD"
+        ),
         partners_file="unused",
     )
 

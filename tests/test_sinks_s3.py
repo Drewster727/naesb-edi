@@ -15,7 +15,7 @@ def _message(**overrides) -> InboundMessage:
         partner_name="acme-pipeline",
         content_digest="abc123def456" + "0" * 52,
         envelope=EnvelopeFields(
-            version="4.0", from_id="1", to_id="2", input_format=InputFormat.X12, transaction_set="873"
+            version="4.0", from_id="987654321", to_id="123456789", input_format=InputFormat.X12, transaction_set="873"
         ),
         plaintext=b"ISA*00*...",
         received_at=datetime(2026, 7, 8, 19, 30, 0, tzinfo=UTC),
@@ -47,7 +47,7 @@ def test_s3_sink_puts_object(s3_bucket):
     assert result.sink_name == "s3"
 
     client = boto3.client("s3", region_name="us-east-1")
-    listing = client.list_objects_v2(Bucket=s3_bucket, Prefix="inbound/acme-pipeline/")
+    listing = client.list_objects_v2(Bucket=s3_bucket, Prefix="inbound/987654321/")
     assert listing["KeyCount"] == 1
     body = client.get_object(Bucket=s3_bucket, Key=listing["Contents"][0]["Key"])["Body"].read()
     assert body == b"ISA*00*..."

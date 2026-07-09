@@ -59,6 +59,12 @@ database:
   # username_env: NAESB_DATABASE_USERNAME
   # password_env: NAESB_DATABASE_PASSWORD
 
+# Basic auth protecting internal-only endpoints (currently just GET /api/partners).
+# Distinct from any partner's inbound_auth/outbound_auth in partners.yaml.
+internal_api:
+  username_env: NAESB_INTERNAL_API_USERNAME
+  password_env: NAESB_INTERNAL_API_PASSWORD
+
 outbound:
   timeout_seconds: 30
   retry_max_attempts: 3
