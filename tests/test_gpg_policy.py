@@ -1,0 +1,124 @@
+import pytest
+
+from app.crypto.gpg_wrapper import GpgError, GpgService
+from app.crypto.policy import WeakAlgorithmError, check_key_length, enforce_policy
+
+
+def test_encrypt_and_decrypt_roundtrip(gpg_service, us_key, partner_key):
+    plaintext = b"NAESB test payload -- 873 nomination content"
+    encrypted = gpg_service.encrypt_and_sign(
+        plaintext,
+        recipient_fingerprint=us_key,
+        signer_fingerprint=partner_key,
+        passphrase="partner-passphrase",
+    )
+    assert encrypted != plaintext
+
+    result = gpg_service.decrypt_and_verify(encrypted, passphrase="us-passphrase")
+    assert result.ok
+    assert result.signature_valid
+    assert result.signer_fingerprint == partner_key
+    assert result.plaintext == plaintext
+
+
+def test_decrypt_and_verify_reports_modern_algorithms(gpg_service, us_key, partner_key):
+    encrypted = gpg_service.encrypt_and_sign(
+        b"payload",
+        recipient_fingerprint=us_key,
+        signer_fingerprint=partner_key,
+        passphrase="partner-passphrase",
+    )
+    result = gpg_service.decrypt_and_verify(encrypted, passphrase="us-passphrase")
+
+    # Assert against the real roundtrip, not a hardcoded status-line string --
+    # if a future GnuPG version changes DECRYPTION_INFO/VALIDSIG field order,
+    # this must fail loudly rather than silently accept weak crypto.
+    enforce_policy(result.algo_info, allowed_ciphers={"AES256"}, allowed_digests={"SHA256"})
+
+
+def test_enforce_policy_rejects_weak_cipher(gpg_service, us_key, partner_key):
+    encrypted = gpg_service.encrypt_and_sign(
+        b"payload",
+        recipient_fingerprint=us_key,
+        signer_fingerprint=partner_key,
+        passphrase="partner-passphrase",
+    )
+    result = gpg_service.decrypt_and_verify(encrypted, passphrase="us-passphrase")
+
+    with pytest.raises(WeakAlgorithmError):
+        enforce_policy(result.algo_info, allowed_ciphers={"3DES"}, allowed_digests={"SHA256"})
+
+
+def test_enforce_policy_rejects_weak_digest(gpg_service, us_key, partner_key):
+    encrypted = gpg_service.encrypt_and_sign(
+        b"payload",
+        recipient_fingerprint=us_key,
+        signer_fingerprint=partner_key,
+        passphrase="partner-passphrase",
+    )
+    result = gpg_service.decrypt_and_verify(encrypted, passphrase="us-passphrase")
+
+    with pytest.raises(WeakAlgorithmError):
+        enforce_policy(result.algo_info, allowed_ciphers={"AES256"}, allowed_digests={"SHA1"})
+
+
+def test_decrypt_wrong_passphrase_fails(gpg_service, us_key, partner_key, fresh_agent_cache):
+    encrypted = gpg_service.encrypt_and_sign(
+        b"payload",
+        recipient_fingerprint=us_key,
+        signer_fingerprint=partner_key,
+        passphrase="partner-passphrase",
+    )
+    result = gpg_service.decrypt_and_verify(encrypted, passphrase="wrong-passphrase")
+    assert not result.ok
+
+
+def test_sign_and_verify_message_roundtrip(gpg_service, us_key):
+    plaintext = "receipt-status: success\nreceipt-timestamp: 2026-07-08T19:44:00Z\n"
+    signed = gpg_service.sign_message(plaintext, signer_fingerprint=us_key, passphrase="us-passphrase")
+
+    result = gpg_service.verify_message(signed, expected_fingerprint=us_key)
+    assert result.valid
+    assert result.plaintext.decode("utf-8") == plaintext
+
+
+def test_verify_message_rejects_tampered_signature(gpg_service, us_key):
+    signed = gpg_service.sign_message("x", signer_fingerprint=us_key, passphrase="us-passphrase")
+    lines = signed.split(b"\n")
+    corrupted = bytearray(lines[3])
+    corrupted[5] = (corrupted[5] + 1) % 256
+    lines[3] = bytes(corrupted)
+    tampered = b"\n".join(lines)
+
+    result = gpg_service.verify_message(tampered, expected_fingerprint=us_key)
+    assert not result.valid
+
+
+def test_verify_message_rejects_wrong_expected_fingerprint(gpg_service, us_key, partner_key):
+    signed = gpg_service.sign_message("x", signer_fingerprint=us_key, passphrase="us-passphrase")
+    result = gpg_service.verify_message(signed, expected_fingerprint=partner_key)
+    assert not result.valid
+
+
+def test_check_key_length_accepts_rsa_above_minimum():
+    check_key_length(pubkey_algo="1", length_bits=2048, min_bits=2048)
+
+
+def test_check_key_length_rejects_short_rsa_key():
+    with pytest.raises(WeakAlgorithmError):
+        check_key_length(pubkey_algo="1", length_bits=1024, min_bits=2048)
+
+
+def test_check_key_length_rejects_non_rsa_algo():
+    with pytest.raises(WeakAlgorithmError):
+        check_key_length(pubkey_algo="17", length_bits=4096, min_bits=2048)  # 17 = DSA
+
+
+def test_encrypt_and_sign_raises_gpg_error_on_unknown_recipient(gpg_service, partner_key):
+    with pytest.raises(GpgError):
+        gpg_service.encrypt_and_sign(
+            b"payload",
+            recipient_fingerprint="0000000000000000000000000000000000000",
+            signer_fingerprint=partner_key,
+            passphrase="partner-passphrase",
+        )

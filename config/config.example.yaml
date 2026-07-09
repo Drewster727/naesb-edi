@@ -1,0 +1,65 @@
+identity:
+  name: "MyCompany"
+  duns: "123456789"
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  inbound_path: /inbound
+  max_body_size_bytes: 26214400
+  outbound_source_address: null   # optional: bind egress to a specific static IP
+
+crypto:
+  private_key_path: /data/gnupg/private_key.asc
+  passphrase_env: NAESB_GPG_PASSPHRASE
+  gnupg_home: /data/gnupg
+  min_rsa_key_bits: 2048
+  recommended_rsa_key_bits: 4096
+  cipher_algo: AES256
+  digest_algo: SHA256
+  compress_algo: ZIP
+  tls_min_version: "1.2"
+
+envelope:
+  header_mapping:
+    version: version
+    from_id: from-id
+    to_id: to-id
+    input_format: input-format
+    transaction_set: transaction-set
+  default_version: "4.0"
+
+sinks:
+  require_at_least_one_durable_success: true
+  filesystem:
+    enabled: true
+    durable: true
+    base_dir: /data/inbound
+  s3:
+    enabled: false
+    durable: true
+    endpoint_url: null          # set for MinIO/Wasabi; omit for AWS
+    bucket: naesb-inbound
+    prefix: ""
+    region: us-east-1
+    access_key_env: NAESB_S3_ACCESS_KEY
+    secret_key_env: NAESB_S3_SECRET_KEY
+  webhook:
+    enabled: false
+    durable: false
+    url: null
+    timeout_seconds: 10
+
+database:
+  url_env: NAESB_DATABASE_URL
+
+outbound:
+  timeout_seconds: 30
+  retry_max_attempts: 3
+  retry_backoff_seconds: 5
+
+logging:
+  level: INFO
+  format: json
+
+partners_file: /app/config/partners.yaml

@@ -1,0 +1,15 @@
+.git
+.gitignore
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+tests/
+PLAN.md
+naesb4.md
+naesb_092923_wgq_version_40_report.pdf
+config/config.yaml
+config/partners.yaml
+config/keys/
+data/
+.env

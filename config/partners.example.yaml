@@ -1,0 +1,17 @@
+partners:
+  - name: acme-pipeline
+    duns: "987654321"
+    endpoint_url: "https://secure-transport.acme-pipeline.example.com/edi/receiver-endpoint"
+    pgp_public_key_path: /data/gnupg/partners/acme-pipeline.pub.asc
+    outbound_auth:
+      type: basic
+      username: myuid
+      password_env: NAESB_ACME_PASSWORD
+    inbound_auth:
+      type: api_key
+      key_env: NAESB_ACME_INBOUND_KEY
+    # envelope_overrides is optional -- only set if this partner's Trading Partner
+    # Agreement (TPA) deviates from the header names in config.yaml's envelope.header_mapping.
+    envelope_overrides:
+      header_mapping:
+        transaction_set: x-transaction-set
