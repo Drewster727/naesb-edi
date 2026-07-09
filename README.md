@@ -2,11 +2,9 @@
 
 A NAESB Wholesale Gas Quadrant (WGQ) Version 4.0 Internet Electronic Transport (Internet ET) gateway: exchanges PGP-encrypted EDI transmissions with trading partners over HTTPS. No UI -- purely an HTTP/API service, meant to sit between internal systems and external NAESB trading partners (interstate pipeline operators).
 
-This replaces an AS2-based gateway (AS2 is not what NAESB 4.0 uses) with a purpose-built implementation of NAESB's own transport: custom lowercase HTTP headers carry the transaction metadata, and the HTTP body is a compressed, signed, and encrypted OpenPGP message. See [`PLAN.md`](PLAN.md) for the full design rationale.
+This replaces an AS2-based gateway (AS2 is not what NAESB 4.0 uses) with a purpose-built implementation of NAESB's own transport: custom lowercase HTTP headers carry the transaction metadata, and the HTTP body is a compressed, signed, and encrypted OpenPGP message. See [`PLAN.md`](docs/PLAN.md) for the full design rationale.
 
 ## Spec provenance -- read before connecting a real trading partner
-
-The official NAESB WGQ Internet ET v4.0 technical manual is copyright/DRM-gated and was not available during development. This implementation is built from `naesb4.md` (a technical implementation guide provided during development, itself incomplete -- it cuts off mid-sentence in its final section). The wire-format specifics that came from that document:
 
 - Lowercase literal HTTP headers: `version`, `from-id`, `to-id`, `input-format`, `transaction-set`.
 - `Content-Type: application/octet-stream`, armor-less binary OpenPGP body.
