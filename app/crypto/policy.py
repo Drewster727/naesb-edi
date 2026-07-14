@@ -24,8 +24,10 @@ DIGEST_ALGO_IDS: dict[str, int] = {
 }
 
 # GnuPG public-key algorithm IDs that count as "RSA" for our purposes
-# (RSA Encrypt-or-Sign / Encrypt-Only / Sign-Only). naesb4.md section 2
-# mandates RSA as the asymmetric algorithm.
+# (RSA Encrypt-or-Sign / Encrypt-Only / Sign-Only). WGQ Cybersecurity Related
+# Standards v4.0, Appendix A mandates RSA as the asymmetric algorithm for PGP
+# (OpenPGP implementations may instead use DSA/El Gamal per the same
+# appendix, but this gateway standardizes on RSA either way).
 RSA_PUBKEY_ALGO_IDS = {"1", "2", "3"}
 
 
@@ -83,7 +85,14 @@ def enforce_policy(
     allowed_digests: set[str],
 ) -> None:
     """For encrypted+signed payloads (an inbound transmission): both the
-    symmetric cipher and the signature digest must be in the allowed sets."""
+    symmetric cipher and the signature digest must be in the allowed sets.
+
+    Note: NAESB itself does not mandate specific cipher/digest algorithms
+    (standard 12.3.26: "NAESB WGQ should not set standards for site-level
+    security"). `allowed_ciphers`/`allowed_digests` are this gateway's own
+    configured local security policy, not a spec requirement -- only the
+    minimum RSA key length (check_key_length(), below) is a real NAESB
+    requirement (Appendix A)."""
     allowed_cipher_ids = {CIPHER_ALGO_IDS[name] for name in allowed_ciphers}
 
     if info.cipher_algo not in allowed_cipher_ids:

@@ -4,14 +4,16 @@ partners:
     endpoint_url: "https://secure-transport.acme-pipeline.example.com/edi/receiver-endpoint"
     pgp_public_key_path: /data/gnupg/partners/acme-pipeline.pub.asc
     outbound_auth:
-      type: basic
-      username: myuid
+      type: basic          # HTTP Basic Authentication over TLS is a real NAESB requirement
+      username: myuid       # (standards 12.3.14/12.3.28/12.3.29) -- this is the spec-compliant default.
       password_env: NAESB_ACME_PASSWORD
     inbound_auth:
-      type: api_key
-      key_env: NAESB_ACME_INBOUND_KEY
-    # envelope_overrides is optional -- only set if this partner's Trading Partner
-    # Agreement (TPA) deviates from the header names in config.yaml's envelope.header_mapping.
+      type: api_key   # NOTE: api_key/Bearer auth is a gateway-only extension, not a NAESB-defined
+      key_env: NAESB_ACME_INBOUND_KEY   # scheme -- prefer `type: basic` unless this partner requires it.
+    # envelope_overrides is optional -- only set fields that deviate from
+    # config.yaml's envelope defaults for this specific Trading Partner
+    # Agreement (TPA).
     envelope_overrides:
-      header_mapping:
-        transaction_set: x-transaction-set
+      version: "1.9"                 # override if this partner's TPA specifies a different Internet ET version
+      agreed_transaction_sets: null  # e.g. ["NOM00001"] once the real 8-char code list is confirmed with this partner
+      use_refnum: false              # set true if this partner uses refnum/refnum-orig message tracking

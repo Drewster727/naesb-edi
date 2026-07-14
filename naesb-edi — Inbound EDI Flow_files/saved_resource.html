@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<!-- saved from url=(0253)https://922f999c-f3a3-47f6-a5b8-b3f579b90c17.frame.claudeusercontent.com/_f/1783714400-84fd/?__frame_t=GAQ2tFtbSJ6Ag9V6gOAKCu8Y.b778e2b9-57cb-47f5-965a-3289a69ef61c.d45936dc-115f-434f-98b7-f2b3488117da.1783718001&__frame_v=manifest.f241257c10c35d5c.json -->
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"><!-- frame-runtime --><!--<base href="/_f/1783714400-84fd/">--><base href="."><script>window.__FRAME_PREAMBLE={"capabilities":{"downloads":"downloads.DUzXFHNF.js","mcp":"mcp.BQqQVVN_.js","self":"self.DqF_PxOe.js"},"transforms":"_transforms.DYk1Ltlh.js"}</script><script>(function(){"use strict";const X="modulepreload",Y=function(e){return"/"+e},Z={},U=function(t,n,u){let o=Promise.resolve();function i(f){const a=new Event("vite:preloadError",{cancelable:!0});if(a.payload=f,window.dispatchEvent(a),!a.defaultPrevented)throw f}return o.then(f=>{for(const a of f||[])a.status==="rejected"&&i(a.reason);return t().catch(i)})},D=["light","dark","system"];function $(e){if(e==null||typeof e!="object")return!1;const t=e.__frame_init;return t!=null&&typeof t=="object"}function q(e){if(e==null||typeof e!="object")return!1;const t=e.__frame_theme;if(t==null||typeof t!="object")return!1;const n=t.theme;return typeof n=="string"&&D.includes(n)}function M(e){if(window===top||e.type==="auxclick"&&e.button!==1)return;const t=e.composedPath?e.composedPath():[e.target];let n=null;for(let f=0;f<t.length;f++){const a=t[f];if(a&&a.matches&&a.matches("a[href],area[href]")){n=a;break}}if(!n&&e.target&&e.target.closest&&(n=e.target.closest("a[href],area[href]")),!n)return;const u=n.getAttribute("href");if(!u)return;let o,i;try{o=new URL(u,document.baseURI),i=new URL(document.baseURI).origin}catch{return}(o.protocol==="http:"||o.protocol==="https:")&&o.origin!==i&&(e.preventDefault(),parent.postMessage({__frame_nav:!0,url:o.href},"*"))}const L={};function y(e){if(window===top)return;const t=Date.now();t-(L[e]||0)<500||(L[e]=t,parent.postMessage({__frame_engaged:!0,kind:e},"*"))}const F=2e3,T=["wheel","touchstart","touchmove","keydown","pointerdown"];let k=0;function B(e){e.isTrusted&&(k=Date.now())}function z(){addEventListener("click",M,!0),addEventListener("auxclick",M,!0)}function W(){for(let e=0;e<T.length;e++)addEventListener(T[e],B,{capture:!0,passive:!0});addEventListener("scroll",e=>{e.isTrusted&&Date.now()-k<F&&y("scroll")},{capture:!0,passive:!0}),addEventListener("pointermove",e=>{e.isTrusted&&y("pointer")},{capture:!0,passive:!0}),addEventListener("click",e=>{e.isTrusted&&y("click")},{capture:!0,passive:!0})}function x(e,t,n){const u=[...t.values()].filter(o=>o.targets.some(i=>i.startsWith(e+".")));return{wrap(o,i){const f=`${e}.${o}`,a=u.filter(s=>s.targets.includes(f));return a.length===0?(...s)=>{try{return i(...s)}catch(d){return Promise.reject(d)}}:(...s)=>{let d=s;for(const c of a){const l=c.module.parameters;if(l)try{d=l(d)}catch{return Promise.reject({code:"transform_error",id:c.id,scope:e,message:"parameters transform failed"})}}let m;try{m=i(...d)}catch(c){m=Promise.reject(c)}return m.then(c=>{for(let l=a.length-1;l>=0;l--){const h=a[l],p=h.module.returns;if(p)try{c=p(c)}catch{return n({id:h.id,scope:e,leg:"returns"}),c}}return c},c=>{for(let l=a.length-1;l>=0;l--){const h=a[l],p=h.module.throws;if(p)try{c=p(c)}catch{return n({id:h.id,scope:e,leg:"throws"}),Promise.reject(c)}}return Promise.reject(c)})}}}}function H(e,t,n,u=()=>{}){const o=new Set(e.changes??[]),i=new Map;for(const f of o){const a=t[f];a&&i.set(f,a)}return{contract:e.contract,changes:o,flags:new Set(e.flags??[]),capabilities:e.capabilities??{},transforms:i,shellOrigin:n.shellOrigin,mount:n.mount,pipe:f=>x(f,i,u)}}(function(){const e=Object.defineProperty,t=globalThis,n=["RTCPeerConnection","webkitRTCPeerConnection","RTCDataChannel","RTCIceCandidate","RTCSessionDescription","RTCRtpSender","RTCRtpReceiver"];let u=0;for(let o=0;o<n.length;o++){const i=n[o];try{e(t,i,{value:void 0,writable:!1,configurable:!1})}catch{try{delete t[i]}catch{}try{e(t,i,{value:void 0,writable:!1,configurable:!0})}catch{}}typeof t[i]=="function"&&u++}if(u&&window!==top)try{parent.postMessage({__frame_rtc_lockdown_failed:u},"*")}catch{}})();const K=1e4,G=Object.freeze([...window.__FRAME_PREAMBLE?.origins??["https://claude.ai","https://preview.claude.ai"]]);function J(e){for(const t of G)if(t.endsWith(":*"))try{const n=new URL(e);if(`${n.protocol}//${n.hostname}:*`===t)return!0}catch{}else if(e===t)return!0;return!1}const w=Object.freeze({...window.__FRAME_PREAMBLE?.capabilities??{}}),E=window.__FRAME_PREAMBLE?.transforms,C=/^[\w.-]+\.js$/,V=/^[a-z][a-z0-9_-]{0,63}$/;let A=null,g=null;function P(e,t,n){try{Object.defineProperty(e,t,{value:n,writable:!1,configurable:!1,enumerable:!0})}catch{try{Object.defineProperty(e,t,{value:n,writable:!1,configurable:!0,enumerable:!0})}catch{}}}let R=!1;function N(e){const t=document.documentElement;e==="light"||e==="dark"?(t.dataset.theme=e,t.style.colorScheme=e,R=!0):R&&(delete t.dataset.theme,t.style.colorScheme="",R=!1)}const _=new Map;function Q(e,t){const n=_.get(e);if(!n)return;Object.assign(n.impl,t),n.impl.__settled=()=>Promise.reject({code:"capability_removed",message:`${e}: method not in this runtime`});const u=n.queue;n.queue=[];for(const o of u){const i=t[o.method];i?i(...o.args).then(o.resolve,o.reject):o.reject({code:"capability_removed",message:`${e}.${o.method} is not in this runtime`})}}function O(e,t){const n=_.get(e);if(!n)return;n.impl.__settled=()=>Promise.reject(t);const u=n.queue;n.queue=[];for(const o of u)o.reject(t)}const j=Object.getOwnPropertyDescriptor(window,"claude");if(window!==top&&!(j&&j.writable===!1)){z(),W();const e=j?.value??{};P(window,"claude",e);const t=s=>{const d={impl:Object.create(null),queue:[]};_.set(s,d);const m=new Proxy(d.impl,{get:(c,l)=>{if(typeof l=="string"&&!(l==="then"||l==="toJSON"||l==="valueOf"))return l==="toString"?Object.prototype.toString:(...h)=>{const p=c[l]??c.__settled;return p?p(...h):new Promise((b,S)=>{d.queue.push({method:l,args:h,resolve:b,reject:S})})}},set:()=>!1});P(e,s,m)};for(const s of Object.keys(w)){if(e[s]!==void 0){P(e,s,e[s]);continue}t(s)}let n=null,u=null,o=0;const i=s=>{s.source!==parent||!J(s.origin)||$(s.data)&&(n=s.data.__frame_init,g=s.origin,removeEventListener("message",i),clearTimeout(o),u?.())};addEventListener("message",i),parent.postMessage({__frame_connect:!0},"*");const f=new Promise(s=>{u=s,o=setTimeout(()=>{removeEventListener("message",i),s()},K)}),a=document.readyState==="loading"?new Promise(s=>document.addEventListener("DOMContentLoaded",()=>s(),{once:!0})):Promise.resolve();f.then(async()=>{if(!n||!g){for(const r of _.keys())O(r,{code:"not_granted",message:"frame initialization did not arrive - capability unavailable"});return}N(n.theme);const s=g;addEventListener("message",r=>{r.source!==parent||r.origin!==s||q(r.data)&&N(r.data.__frame_theme.theme)});const d=r=>U(()=>import("/_runtime/"+r),void 0),m=Object.keys(n.capabilities??{});for(const r of m)Object.hasOwn(w,r)||V.test(r)&&e[r]===void 0&&(t(r),O(r,{code:"capability_disabled",message:"capability not in this runtime generation"}));const c=m.filter(r=>Object.hasOwn(w,r)).map(r=>[r,w[r]]).filter(r=>typeof r[1]=="string"&&C.test(r[1])),[l,...h]=await Promise.allSettled([E&&C.test(E)?d(E):Promise.resolve({}),...c.map(([,r])=>d(r))]),p=g;A=H(n,l.status==="fulfilled"&&l.value?.TRANSFORMS||{},{shellOrigin:p,mount:Q},r=>parent.postMessage({__frame_cap_telemetry:r},p));const b=r=>parent.postMessage({__frame_cap_telemetry:{kind:"cap-load-error",cap:r}},p),S=A;h.forEach((r,v)=>{const I=c[v][0];if(r.status!=="fulfilled"){b(I);return}try{r.value?.install?.(S)}catch{b(I)}});for(const[r,v]of _)v.queue.length===0&&Object.keys(v.impl).length>0||O(r,{code:m.includes(r)?"capability_disabled":"not_granted",message:"capability not available in this session"});await a,parent.postMessage({__frame_ready:!0},g)})}})();</script><!-- /frame-runtime --><meta name="viewport" content="width=device-width,initial-scale=1"><style>:root{color-scheme:light}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}</style></head><body>
+<title>naesb-edi — Inbound EDI Flow</title>
+<style>
+  :root {
+    --bg: #f5f7fa;
+    --surface: #ffffff;
+    --surface-2: #edf1f6;
+    --border: #d8dfe8;
+    --text: #17202f;
+    --text-muted: #5b6577;
+    --partner: #6b6f8a;
+    --partner-soft: #eceefa;
+    --gateway: #2d5bd6;
+    --gateway-soft: #e8edfc;
+    --storage: #0d8f6e;
+    --storage-soft: #e3f6ef;
+    --danger: #b6362f;
+    --danger-soft: #fbeaea;
+    --shadow: 0 1px 2px rgba(23, 32, 47, 0.06), 0 8px 20px -12px rgba(23, 32, 47, 0.12);
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0c1017;
+      --surface: #131922;
+      --surface-2: #1a2230;
+      --border: #2a3446;
+      --text: #e6eaf2;
+      --text-muted: #8d99b0;
+      --partner: #a3aac4;
+      --partner-soft: #1c2032;
+      --gateway: #7b9bf3;
+      --gateway-soft: #1a2440;
+      --storage: #3fd1a4;
+      --storage-soft: #103328;
+      --danger: #ef7570;
+      --danger-soft: #34191b;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0c1017;
+    --surface: #131922;
+    --surface-2: #1a2230;
+    --border: #2a3446;
+    --text: #e6eaf2;
+    --text-muted: #8d99b0;
+    --partner: #a3aac4;
+    --partner-soft: #1c2032;
+    --gateway: #7b9bf3;
+    --gateway-soft: #1a2440;
+    --storage: #3fd1a4;
+    --storage-soft: #103328;
+    --danger: #ef7570;
+    --danger-soft: #34191b;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  }
+  :root[data-theme="light"] {
+    --bg: #f5f7fa;
+    --surface: #ffffff;
+    --surface-2: #edf1f6;
+    --border: #d8dfe8;
+    --text: #17202f;
+    --text-muted: #5b6577;
+    --partner: #6b6f8a;
+    --partner-soft: #eceefa;
+    --gateway: #2d5bd6;
+    --gateway-soft: #e8edfc;
+    --storage: #0d8f6e;
+    --storage-soft: #e3f6ef;
+    --danger: #b6362f;
+    --danger-soft: #fbeaea;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  .page {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 40px 24px 72px;
+  }
+
+  header.top {
+    margin-bottom: 34px;
+  }
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--gateway);
+    margin: 0 0 10px;
+  }
+  h1 {
+    font-family: var(--font-mono);
+    font-size: clamp(22px, 3.4vw, 30px);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0 0 10px;
+    text-wrap: balance;
+  }
+  header.top p {
+    max-width: 62ch;
+    color: var(--text-muted);
+    font-size: 14.5px;
+    line-height: 1.6;
+    margin: 0;
+  }
+
+  /* ---------- Lane header row ---------- */
+  .lanes-head {
+    display: grid;
+    grid-template-columns: 1fr 1.35fr 1fr;
+    gap: 14px;
+    margin-bottom: 6px;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    padding-top: 4px;
+    background: linear-gradient(var(--bg) 78%, transparent);
+  }
+  .lane-tag {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 12px;
+    border-radius: 8px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .lane-tag .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .lane-tag.partner { background: var(--partner-soft); color: var(--partner); }
+  .lane-tag.partner .dot { background: var(--partner); }
+  .lane-tag.gateway { background: var(--gateway-soft); color: var(--gateway); }
+  .lane-tag.gateway .dot { background: var(--gateway); }
+  .lane-tag.storage { background: var(--storage-soft); color: var(--storage); }
+  .lane-tag.storage .dot { background: var(--storage); }
+
+  /* ---------- Flow grid ---------- */
+  .flow {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+  .row {
+    display: grid;
+    grid-template-columns: 1fr 1.35fr 1fr;
+    gap: 14px;
+    align-items: stretch;
+  }
+  .cell { min-width: 0; }
+  .cell.empty { visibility: hidden; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    padding: 14px 16px 15px;
+    border-left: 3px solid transparent;
+    height: 100%;
+  }
+  .card.partner { border-left-color: var(--partner); }
+  .card.gateway { border-left-color: var(--gateway); }
+  .card.storage { border-left-color: var(--storage); }
+
+  .card .index {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    letter-spacing: 0.04em;
+  }
+  .card h3 {
+    margin: 3px 0 8px;
+    font-size: 14.5px;
+    font-weight: 700;
+    letter-spacing: -0.005em;
+  }
+  .card ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .card li {
+    font-size: 12.8px;
+    line-height: 1.5;
+    color: var(--text);
+    padding-left: 13px;
+    position: relative;
+  }
+  .card li::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 7px;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--border);
+  }
+  .card code {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    background: var(--surface-2);
+    padding: 0.5px 5px;
+    border-radius: 4px;
+  }
+
+  .fail {
+    margin-top: 10px;
+    padding-top: 9px;
+    border-top: 1px dashed var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+  .fail .label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--danger);
+    margin-right: 2px;
+  }
+  .chip {
+    font-family: var(--font-mono);
+    font-size: 10.8px;
+    background: var(--danger-soft);
+    color: var(--danger);
+    padding: 2px 7px;
+    border-radius: 100px;
+    white-space: nowrap;
+  }
+
+  /* ---------- connectors ---------- */
+  .connector {
+    display: grid;
+    grid-template-columns: 1fr 1.35fr 1fr;
+    gap: 14px;
+    margin: 2px 0;
+  }
+  .connector .lane {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  .connector .down {
+    width: 1px;
+    height: 22px;
+    background: repeating-linear-gradient(var(--border) 0 4px, transparent 4px 8px);
+  }
+  .connector .down.on { background: repeating-linear-gradient(var(--gateway) 0 4px, transparent 4px 8px); }
+
+  .bridge-row {
+    margin: 4px 0 4px;
+    display: flex;
+    justify-content: center;
+  }
+  .bridge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    padding: 5px 4px;
+  }
+  .bridge .arrow { color: var(--gateway); font-size: 14px; line-height: 1; }
+  .bridge b { color: var(--text); font-weight: 600; }
+
+  /* ---------- footer / "after" band ---------- */
+  .after {
+    margin-top: 40px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .after .head {
+    padding: 14px 20px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+  .after .items {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0;
+  }
+  .after .item {
+    padding: 18px 20px;
+    border-left: 1px solid var(--border);
+  }
+  .after .item:first-child { border-left: none; }
+  .after .item h4 {
+    margin: 0 0 6px;
+    font-size: 13.5px;
+    font-weight: 700;
+  }
+  .after .item p {
+    margin: 0;
+    font-size: 12.8px;
+    line-height: 1.55;
+    color: var(--text-muted);
+  }
+  .after .item.warn h4 { color: var(--danger); }
+
+  /* ---------- legend ---------- */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    margin-top: 14px;
+    font-size: 12px;
+    color: var(--text-muted);
+    align-items: center;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .sw { width: 10px; height: 10px; border-radius: 3px; }
+
+  @media (max-width: 880px) {
+    .lanes-head { position: static; background: none; }
+    .lanes-head, .row, .connector { grid-template-columns: 1fr; }
+    .connector .lane:not(.active) { display: none; }
+    .connector .down { height: 16px; }
+    .cell.empty { display: none; }
+    .after .items { grid-template-columns: 1fr; }
+    .after .item { border-left: none; border-top: 1px solid var(--border); }
+    .after .item:first-child { border-top: none; }
+  }
+</style>
+
+<div class="page">
+  <header class="top">
+    <p class="eyebrow">naesb-edi · internet et · wgq cybersecurity standards v4.0</p>
+    <h1>How a partner's EDI message flows through the gateway</h1>
+    <p>
+      One inbound nomination (X12 873), from the moment a trading partner encrypts it to the
+      moment their receipt is verified. Every stage that can fail still returns
+      <code>HTTP 200</code> — the failure shows up as a specific error code
+      <em>inside</em> the signed receipt, never as the HTTP status.
+    </p>
+  </header>
+
+  <div class="lanes-head">
+    <div class="lane-tag partner"><span class="dot"></span>Trading partner</div>
+    <div class="lane-tag gateway"><span class="dot"></span>naesb‑edi gateway</div>
+    <div class="lane-tag storage"><span class="dot"></span>storage &amp; downstream</div>
+  </div>
+
+  <div class="flow">
+
+    <!-- 1 -->
+    <div class="row">
+      <div class="cell">
+        <div class="card partner">
+          <div class="index">01</div>
+          <h3>Prepare the package</h3>
+          <ul>
+            <li>Compress → sign with <em>their</em> private key → encrypt to <em>our</em> public key</li>
+            <li>Wrap the ciphertext as <code>multipart/encrypted</code> inside <code>input-data</code></li>
+            <li>Assemble the ordered <code>multipart/form-data</code> envelope (<code>from</code>, <code>to</code>, <code>version</code>, <code>input-format</code>, …)</li>
+          </ul>
+        </div>
+      </div>
+      <div class="cell empty"></div>
+      <div class="cell empty"></div>
+    </div>
+
+    <div class="bridge-row">
+      <div class="bridge"><span class="arrow">→</span><b>POST /inbound</b>&nbsp;· TLS · HTTP Basic Auth<span class="arrow">→</span></div>
+    </div>
+
+    <!-- 2 -->
+    <div class="row">
+      <div class="cell empty"></div>
+      <div class="cell">
+        <div class="card gateway">
+          <div class="index">02</div>
+          <h3>Receive &amp; authenticate</h3>
+          <ul>
+            <li>Read the body, capture <code>time-c</code> immediately — before anything else</li>
+            <li>Enforce the max body size</li>
+            <li>Check HTTP Basic Auth against this partner's credentials</li>
+            <li>Assign the next sequential <code>trans-id</code></li>
+          </ul>
+          <div class="fail">
+            <span class="label">on failure</span>
+            <span class="chip">plain HTTP 401 (auth) — no signed receipt at all</span>
+          </div>
+        </div>
+      </div>
+      <div class="cell empty"></div>
+    </div>
+
+    <div class="connector">
+      <div class="lane"></div>
+      <div class="lane active"><div class="down on"></div></div>
+      <div class="lane"></div>
+    </div>
+
+    <!-- 3 -->
+    <div class="row">
+      <div class="cell empty"></div>
+      <div class="cell">
+        <div class="card gateway">
+          <div class="index">03</div>
+          <h3>Parse &amp; authorize</h3>
+          <ul>
+            <li>Parse the multipart envelope, unwrap <code>input-data</code></li>
+            <li>Confirm the envelope's <code>from</code> matches the authenticated partner's DUNS</li>
+            <li>Dedupe by <code>refnum</code> (if this partner uses it) or a digest of the ciphertext</li>
+          </ul>
+          <div class="fail">
+            <span class="label">on failure</span>
+            <span class="chip">EEDM1xx</span>
+            <span class="chip">EEDM701</span>
+            <span class="chip">EEDM121 / GWX‑DUPLICATE‑DIGEST</span>
+          </div>
+        </div>
+      </div>
+      <div class="cell empty"></div>
+    </div>
+
+    <div class="connector">
+      <div class="lane"></div>
+      <div class="lane active"><div class="down on"></div></div>
+      <div class="lane"></div>
+    </div>
+
+    <!-- 4 -->
+    <div class="row">
+      <div class="cell empty"></div>
+      <div class="cell">
+        <div class="card gateway">
+          <div class="index">04</div>
+          <h3>Record it's happening</h3>
+          <ul>
+            <li>Insert a row in Postgres <code>messages</code> — <code>status = processing</code></li>
+          </ul>
+        </div>
+      </div>
+      <div class="cell empty"></div>
+    </div>
+
+    <div class="connector">
+      <div class="lane"></div>
+      <div class="lane active"><div class="down on"></div></div>
+      <div class="lane"></div>
+    </div>
+
+    <!-- 5 -->
+    <div class="row">
+      <div class="cell empty"></div>
+      <div class="cell">
+        <div class="card gateway">
+          <div class="index">05</div>
+          <h3>Decrypt &amp; verify</h3>
+          <ul>
+            <li>Decrypt with our private key</li>
+            <li>Verify the signature against this partner's public key</li>
+            <li>Enforce crypto policy — allowed cipher/digest, RSA ≥ 2048 bits</li>
+          </ul>
+          <div class="fail">
+            <span class="label">on failure</span>
+            <span class="chip">EEDM699 decrypt</span>
+            <span class="chip">EEDM604 signature</span>
+            <span class="chip">GWX‑WEAK‑ALGO</span>
+          </div>
+        </div>
+      </div>
+      <div class="cell empty"></div>
+    </div>
+
+    <div class="bridge-row">
+      <div class="bridge"><span class="arrow">→</span>fan out concurrently<span class="arrow">→</span></div>
+    </div>
+
+    <!-- 6 -->
+    <div class="row">
+      <div class="cell empty"></div>
+      <div class="cell empty"></div>
+      <div class="cell">
+        <div class="card storage">
+          <div class="index">06</div>
+          <h3>Deliver the plaintext</h3>
+          <ul>
+            <li>Filesystem / S3 — <em>durable</em>, keyed by sender DUNS</li>
+            <li>Webhook notification — best-effort, non-durable</li>
+          </ul>
+          <div class="fail">
+            <span class="label">on failure</span>
+            <span class="chip">0 durable sinks ⇒ GWX‑SINK‑FAILURE</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="bridge-row">
+      <div class="bridge"><span class="arrow">←</span>≥1 durable sink confirmed<span class="arrow">←</span></div>
+    </div>
+
+    <!-- 7 -->
+    <div class="row">
+      <div class="cell empty"></div>
+      <div class="cell">
+        <div class="card gateway">
+          <div class="index">07</div>
+          <h3>Record &amp; respond</h3>
+          <ul>
+            <li>Update the <code>messages</code> row — <code>status = accepted</code></li>
+            <li>Build the receipt: <code>time-c</code>, <code>request-status = ok</code>, <code>server-id</code>, <code>trans-id</code></li>
+            <li>Detached-sign it with our private key, wrap as <code>multipart/signed</code></li>
+            <li>Return <code>HTTP 200</code></li>
+          </ul>
+        </div>
+      </div>
+      <div class="cell empty"></div>
+    </div>
+
+    <div class="bridge-row">
+      <div class="bridge"><span class="arrow">←</span><b>200 OK</b>&nbsp;· signed <code>gisb‑acknowledgement‑receipt</code><span class="arrow">←</span></div>
+    </div>
+
+    <!-- 8 -->
+    <div class="row">
+      <div class="cell">
+        <div class="card partner">
+          <div class="index">08</div>
+          <h3>Confirm delivery</h3>
+          <ul>
+            <li>Verify our detached signature against our public key</li>
+            <li><code>request-status: ok</code> → done</li>
+            <li><code>EEDM…</code> / <code>WEDM…</code> → act on it, resend if warranted</li>
+          </ul>
+          <div class="fail">
+            <span class="label">no receipt at all</span>
+            <span class="chip">retry up to 3× over 30–120 min, then Exchange Failure</span>
+          </div>
+        </div>
+      </div>
+      <div class="cell empty"></div>
+      <div class="cell empty"></div>
+    </div>
+
+  </div>
+
+  <div class="legend">
+    <span><span class="sw" style="background:var(--partner)"></span>trading partner</span>
+    <span><span class="sw" style="background:var(--gateway)"></span>naesb-edi pipeline</span>
+    <span><span class="sw" style="background:var(--storage)"></span>storage &amp; downstream</span>
+    <span><span class="sw" style="background:var(--danger)"></span>failure → error code in the signed receipt</span>
+  </div>
+
+  <div class="after">
+    <div class="head">What happens after</div>
+    <div class="items">
+      <div class="item">
+        <h4>Audit trail</h4>
+        <p>The Postgres <code>messages</code> row is permanent: status, <code>trans-id</code>,
+        timestamps, and per-sink delivery results, whether the transmission was accepted or rejected.</p>
+      </div>
+      <div class="item">
+        <h4>Downstream processing</h4>
+        <p>The decrypted X12 file sits wherever the sink put it, ready for internal systems to
+        translate and act on. Reading it from there is outside this gateway's scope — its job
+        ends at "delivered somewhere durable."</p>
+      </div>
+      <div class="item warn">
+        <h4>If nothing comes back</h4>
+        <p>No valid receipt after 3 send attempts spread over 30–120 minutes is a spec-defined
+        <b>Exchange Failure</b> — the partner's system is expected to escalate, not keep retrying silently.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body></html>

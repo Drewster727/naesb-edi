@@ -4,7 +4,6 @@ from typing import Annotated, Literal
 import yaml
 from pydantic import BaseModel, Field
 
-from app.envelope.mapping import HeaderOverrides
 from app.settings import resolve_env
 
 
@@ -31,7 +30,15 @@ AuthConfig = Annotated[BasicAuthConfig | ApiKeyAuthConfig, Field(discriminator="
 
 
 class EnvelopeOverrides(BaseModel):
-    header_mapping: HeaderOverrides | None = None
+    """Per-partner deviations from the global envelope defaults -- real,
+    spec-anticipated variability (protocol version, mutually-agreed
+    transaction sets, whether this partner uses refnum tracking), not a
+    header-name remapping (the envelope field names themselves are fixed
+    protocol literals, not TPA-negotiable)."""
+
+    version: str | None = None
+    agreed_transaction_sets: list[str] | None = None
+    use_refnum: bool = False
 
 
 class PartnerConfig(BaseModel):
@@ -42,6 +49,10 @@ class PartnerConfig(BaseModel):
     outbound_auth: AuthConfig
     inbound_auth: AuthConfig
     envelope_overrides: EnvelopeOverrides | None = None
+
+    @property
+    def use_refnum(self) -> bool:
+        return bool(self.envelope_overrides and self.envelope_overrides.use_refnum)
 
 
 class PartnersFile(BaseModel):

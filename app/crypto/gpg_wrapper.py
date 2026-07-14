@@ -1,3 +1,4 @@
+import tempfile
 from dataclasses import dataclass
 
 import gnupg
@@ -28,9 +29,19 @@ class VerifyResult:
 
 
 class GpgService:
-    """Thin wrapper around python-gnupg implementing the compress->sign->encrypt
-    outbound pipeline and decrypt+verify inbound pipeline from naesb4.md section 2,
-    plus the sign-only flow used for the synchronous receipt (section 4)."""
+    """Thin wrapper around python-gnupg implementing the NAESB Internet ET
+    payload pipeline: compress -> sign -> encrypt outbound / decrypt +
+    verify inbound (WGQ Cybersecurity Related Standards v4.0, "Security" /
+    "Encryption / Digital Signature"), plus a detached-signature flow used
+    for the synchronous `gisb-acknowledgement-receipt`.
+
+    Note: the specific cipher/digest/compress algorithms configured here
+    (`cipher_algo`, `digest_algo`, `compress_algo`) are this gateway's own
+    local security policy default, not a NAESB mandate -- the standard only
+    requires OpenPGP or PGP with a minimum 2048-bit RSA key (Appendix A);
+    standard 12.3.26 explicitly disclaims setting site-level crypto-algorithm
+    standards beyond that.
+    """
 
     def __init__(self, gnupg_home: str, cipher_algo: str, digest_algo: str, compress_algo: str):
         self.gpg = gnupg.GPG(gnupghome=gnupg_home)
@@ -57,7 +68,8 @@ class GpgService:
         passphrase: str,
     ) -> bytes:
         """Compress, sign (our key), encrypt (recipient's key) in one pass.
-        Returns armor-less raw binary, per naesb4.md section 2/3."""
+        Returns armor-less raw binary -- this is the OpenPGP message that
+        goes inside the `input-data` field's `multipart/encrypted` wrapper."""
         result = self.gpg.encrypt(
             data,
             recipients=[recipient_fingerprint],
@@ -83,35 +95,34 @@ class GpgService:
             status_text=result.status or "",
         )
 
-    def sign_message(self, plaintext: str, signer_fingerprint: str, passphrase: str, armor: bool = True) -> bytes:
-        """Combined one-pass-signature + literal-data OpenPGP message (`gpg --sign`),
-        not a detached signature and not ASCII clearsign -- avoids clearsign's
-        dash-escaping/line-ending re-serialization pitfalls while still producing
-        a single self-contained "OpenPGP-signed" blob, per naesb4.md section 4."""
+    def detached_sign(self, data: bytes, signer_fingerprint: str, passphrase: str) -> bytes:
+        """Produce a standalone, ASCII-armored detached OpenPGP signature
+        (`application/pgp-signature`) over `data`, for the receipt's
+        `multipart/signed` structure (RFC 1847 / RFC 3156)."""
         result = self.gpg.sign(
-            plaintext,
+            data,
             keyid=signer_fingerprint,
             passphrase=passphrase,
-            detach=False,
+            detach=True,
             clearsign=False,
-            binary=not armor,
+            binary=False,
             extra_args=["--digest-algo", self.digest_algo],
         )
         if not result.data:
-            raise GpgError(f"sign_message failed: {result.status} / {getattr(result, 'stderr', '')}")
+            raise GpgError(f"detached_sign failed: {result.status} / {getattr(result, 'stderr', '')}")
         return bytes(result.data)
 
-    def verify_message(self, signed_data: bytes, expected_fingerprint: str) -> VerifyResult:
-        """Verify + extract plaintext from a combined signed (non-encrypted)
-        OpenPGP message produced by sign_message(). GnuPG's --decrypt handles
-        signed-only input just like decrypt_and_verify() handles encrypted
-        input, so this reuses the same underlying call."""
-        result = self.gpg.decrypt(signed_data, always_trust=True)
+    def verify_detached(self, data: bytes, signature: bytes, expected_fingerprint: str) -> VerifyResult:
+        """Verify a detached signature (as produced by detached_sign(), or
+        received from a partner's `application/pgp-signature` body part)
+        against `data`. python-gnupg's `verify_data()` requires the
+        signature on disk, hence the temp file."""
+        with tempfile.NamedTemporaryFile(suffix=".sig") as sig_file:
+            sig_file.write(signature)
+            sig_file.flush()
+            result = self.gpg.verify_data(sig_file.name, data)
         info = parse_status(result.stderr)
         valid = bool(result.valid) and result.fingerprint == expected_fingerprint
         return VerifyResult(
-            valid=valid,
-            plaintext=result.data,
-            signer_fingerprint=result.fingerprint,
-            algo_info=info,
+            valid=valid, plaintext=data, signer_fingerprint=result.fingerprint, algo_info=info
         )

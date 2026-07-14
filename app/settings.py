@@ -6,8 +6,6 @@ from urllib.parse import urlsplit, urlunsplit
 import yaml
 from pydantic import BaseModel, Field
 
-from app.envelope.mapping import HeaderMapping
-
 
 class MissingEnvVarError(RuntimeError):
     def __init__(self, var_name: str):
@@ -29,6 +27,13 @@ class IdentityConfig(BaseModel):
 
 class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
+    # WGQ Cybersecurity Related Standards v4.0, Appendix C restricts Internet
+    # ET to a specific list of allowed TCP ports (HTTPS 443, 5713, 6112,
+    # 6304, 6874, 7403; or a mutually agreed alternate). This is a reverse
+    # proxy / network-layer concern this app doesn't enforce itself -- ensure
+    # whatever port the app is actually reached on (after TLS termination)
+    # is one of the allowed ports or has been mutually agreed with the
+    # partner via the TPW.
     port: int = 8000
     inbound_path: str = "/inbound"
     max_body_size_bytes: int = 26_214_400
@@ -52,8 +57,25 @@ class CryptoConfig(BaseModel):
 
 
 class EnvelopeConfig(BaseModel):
-    header_mapping: HeaderMapping
-    default_version: str = "4.0"
+    # This gateway's own `server-id` receipt field: a domainname or
+    # hostname.domainname, no embedded spaces (Envelope Data Dictionary).
+    server_id: str
+    # The NAESB Internet ET *protocol* version (data dictionary `version`
+    # field, historically a small decimal like "1.9" -- NOT this manual's
+    # "4.0" revision number). No safe default exists without a real Trading
+    # Partner Agreement, so this is required; set per-partner via
+    # `PartnerConfig.envelope_overrides.version` if a partner disagrees.
+    default_version: str
+    # What we request of partners in `receipt-security-selection` on
+    # outbound sends. The spec's own illustrated example literally requests
+    # `signed-receipt-micalg=required,md5` -- that's legacy RFC 1767/EDIINT
+    # wording inherited by the data dictionary, not a live NAESB mandate to
+    # actually use MD5. Kept configurable rather than hardcoded to that
+    # example; default here matches this gateway's own digest policy
+    # (crypto.digest_algo).
+    receipt_security_selection: str = (
+        "signed-receipt-protocol=required,pgp-signature;signed-receipt-micalg=required,sha256"
+    )
 
 
 class FilesystemSinkConfig(BaseModel):
@@ -151,8 +173,16 @@ class InternalApiConfig(BaseModel):
 
 class OutboundConfig(BaseModel):
     timeout_seconds: float = 30.0
-    retry_max_attempts: int = 3
-    retry_backoff_seconds: float = 5.0
+    # Delay, in seconds from job creation, of each delivery attempt. Length
+    # of this list is the max attempt count. Standards 12.3.10/12.3.11 and
+    # definition 12.2.24 require 3 attempts, with an "Exchange Failure"
+    # declared to the partner if the gap between the first and last attempt
+    # exceeds 30-120 minutes (FAQ Q1). Default: T+0 / +15min / +45min (45
+    # minutes total, comfortably inside that band).
+    retry_schedule_seconds: list[int] = Field(default_factory=lambda: [0, 900, 2700])
+    # How often the worker process (app/worker.py) polls outbound_jobs for
+    # due attempts.
+    worker_poll_interval_seconds: float = 15.0
 
 
 class LoggingConfig(BaseModel):

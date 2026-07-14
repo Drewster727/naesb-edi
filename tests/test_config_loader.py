@@ -1,4 +1,3 @@
-import os
 
 import pytest
 import yaml
@@ -15,13 +14,8 @@ VALID_CONFIG = {
         "gnupg_home": "/data/gnupg",
     },
     "envelope": {
-        "header_mapping": {
-            "version": "version",
-            "from_id": "from-id",
-            "to_id": "to-id",
-            "input_format": "input-format",
-            "transaction_set": "transaction-set",
-        }
+        "server_id": "gateway.example.com",
+        "default_version": "1.9",
     },
     "database": {"url_env": "TEST_DATABASE_URL"},
     "internal_api": {
@@ -64,17 +58,15 @@ def test_load_settings_missing_required_field(tmp_path):
         load_settings(path)
 
 
-def test_load_settings_header_mapping_missing_entry(tmp_path):
-    bad = {**VALID_CONFIG, "envelope": {"header_mapping": {"version": "version"}}}
+def test_load_settings_envelope_requires_default_version(tmp_path):
+    bad = {**VALID_CONFIG, "envelope": {"server_id": "gateway.example.com"}}  # missing default_version
     path = _write_yaml(tmp_path / "config.yaml", bad)
     with pytest.raises(Exception):
         load_settings(path)
 
 
-def test_load_settings_header_mapping_uppercase_rejected(tmp_path):
-    bad_mapping = dict(VALID_CONFIG["envelope"]["header_mapping"])
-    bad_mapping["from_id"] = "From-Id"
-    bad = {**VALID_CONFIG, "envelope": {"header_mapping": bad_mapping}}
+def test_load_settings_envelope_requires_server_id(tmp_path):
+    bad = {**VALID_CONFIG, "envelope": {"default_version": "1.9"}}  # missing server_id
     path = _write_yaml(tmp_path / "config.yaml", bad)
     with pytest.raises(Exception):
         load_settings(path)
@@ -163,7 +155,7 @@ def test_partner_envelope_override_merges(tmp_path):
         "partners": [
             {
                 **VALID_PARTNERS["partners"][0],
-                "envelope_overrides": {"header_mapping": {"transaction_set": "x-transaction-set"}},
+                "envelope_overrides": {"version": "1.6", "use_refnum": True},
             }
         ]
     }
@@ -171,6 +163,12 @@ def test_partner_envelope_override_merges(tmp_path):
     registry = load_partners(path)
     partner = registry.get_by_name("acme-pipeline")
     assert partner.envelope_overrides is not None
-    from app.envelope.fields import CanonicalField
+    assert partner.envelope_overrides.version == "1.6"
+    assert partner.use_refnum is True
 
-    assert partner.envelope_overrides.header_mapping.root[CanonicalField.TRANSACTION_SET] == "x-transaction-set"
+
+def test_partner_use_refnum_defaults_false(tmp_path):
+    path = _write_yaml(tmp_path / "partners.yaml", VALID_PARTNERS)
+    registry = load_partners(path)
+    partner = registry.get_by_name("acme-pipeline")
+    assert partner.use_refnum is False

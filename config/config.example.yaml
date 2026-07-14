@@ -4,6 +4,11 @@ identity:
 
 server:
   host: 0.0.0.0
+  # NAESB Appendix C restricts Internet ET to a specific TCP port list
+  # (443, 5713, 6112, 6304, 6874, 7403, or a mutually agreed alternate).
+  # Whatever sits in front of this app (reverse proxy / load balancer) must
+  # terminate TLS on one of those ports, or on a port mutually agreed with
+  # each partner via the TPW.
   port: 8000
   inbound_path: /inbound
   max_body_size_bytes: 26214400
@@ -13,21 +18,24 @@ crypto:
   private_key_path: /data/gnupg/private_key.asc
   passphrase_env: NAESB_GPG_PASSPHRASE
   gnupg_home: /data/gnupg
-  min_rsa_key_bits: 2048
-  recommended_rsa_key_bits: 4096
-  cipher_algo: AES256
-  digest_algo: SHA256
+  min_rsa_key_bits: 2048          # real NAESB requirement (Appendix A)
+  recommended_rsa_key_bits: 4096  # real NAESB recommendation (Appendix A)
+  cipher_algo: AES256             # this gateway's own local security policy -- not a NAESB mandate
+  digest_algo: SHA256             # this gateway's own local security policy -- not a NAESB mandate
   compress_algo: ZIP
   tls_min_version: "1.2"
 
 envelope:
-  header_mapping:
-    version: version
-    from_id: from-id
-    to_id: to-id
-    input_format: input-format
-    transaction_set: transaction-set
-  default_version: "4.0"
+  # This gateway's `server-id` receipt field: domainname or
+  # hostname.domainname, no embedded spaces.
+  server_id: gateway.mycompany.example.com
+  # REQUIRED, no safe default: the NAESB Internet ET *protocol* version
+  # (data dictionary `version` field -- historically a small decimal like
+  # "1.9", not this manual's "4.0" revision number). Confirm the correct
+  # value with each Trading Partner Agreement before going live; override
+  # per-partner via partners.yaml's envelope_overrides.version if needed.
+  default_version: "1.9"
+  receipt_security_selection: "signed-receipt-protocol=required,pgp-signature;signed-receipt-micalg=required,sha256"
 
 sinks:
   require_at_least_one_durable_success: true
@@ -59,16 +67,22 @@ database:
   # username_env: NAESB_DATABASE_USERNAME
   # password_env: NAESB_DATABASE_PASSWORD
 
-# Basic auth protecting internal-only endpoints (currently just GET /api/partners).
-# Distinct from any partner's inbound_auth/outbound_auth in partners.yaml.
+# Basic auth protecting internal-only endpoints (GET /api/partners,
+# POST /outbound/send, GET /outbound/jobs/{id}). Distinct from any partner's
+# inbound_auth/outbound_auth in partners.yaml.
 internal_api:
   username_env: NAESB_INTERNAL_API_USERNAME
   password_env: NAESB_INTERNAL_API_PASSWORD
 
 outbound:
   timeout_seconds: 30
-  retry_max_attempts: 3
-  retry_backoff_seconds: 5
+  # Delay (seconds from job creation) of each delivery attempt; length of
+  # this list is the max attempt count. NAESB standards 12.3.10/12.3.11
+  # require 3 attempts, declaring an "Exchange Failure" if the gap between
+  # the first and last attempt exceeds 30-120 minutes. Default below:
+  # T+0 / +15min / +45min.
+  retry_schedule_seconds: [0, 900, 2700]
+  worker_poll_interval_seconds: 15
 
 logging:
   level: INFO   # DEBUG | INFO | WARNING | ERROR | CRITICAL

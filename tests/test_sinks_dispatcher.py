@@ -12,7 +12,13 @@ def _message() -> InboundMessage:
         partner_name="acme-pipeline",
         content_digest="abc123",
         envelope=EnvelopeFields(
-            version="4.0", from_id="1", to_id="2", input_format=InputFormat.X12, transaction_set="873"
+            version="1.9",
+            from_id="1",
+            to_id="2",
+            receipt_disposition_to="1",
+            input_format=InputFormat.X12,
+            receipt_security_selection="signed-receipt-protocol=required,pgp-signature;signed-receipt-micalg=required,sha256",
+            transaction_set="NOM00001",
         ),
         plaintext=b"data",
         received_at=datetime(2026, 7, 8, 19, 30, 0, tzinfo=UTC),

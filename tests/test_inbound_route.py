@@ -16,11 +16,11 @@ from app.dependencies import (
     get_sinks,
     get_tracker,
 )
-from app.envelope.fields import CanonicalField
-from app.envelope.mapping import HeaderMapping
-from app.envelope.receipt import Receipt
+from app.envelope.fields import EnvelopeFields, InputFormat
+from app.envelope.multipart_codec import build_multipart_body
+from app.envelope.receipt import NaesbReceipt, parse_signed_mime
 from app.inbound import routes as inbound_routes
-from app.partners import ApiKeyAuthConfig, BasicAuthConfig, PartnerConfig, PartnerRegistry
+from app.partners import ApiKeyAuthConfig, BasicAuthConfig, EnvelopeOverrides, PartnerConfig, PartnerRegistry
 from app.settings import (
     CryptoConfig,
     EnvelopeConfig,
@@ -35,25 +35,15 @@ from app.tracking.models import MessageRecord
 
 PARTNER_DUNS = "987654321"
 PARTNER_NAME = "acme-pipeline"
-
-
-def _header_mapping() -> HeaderMapping:
-    return HeaderMapping(
-        {
-            CanonicalField.VERSION: "version",
-            CanonicalField.FROM_ID: "from-id",
-            CanonicalField.TO_ID: "to-id",
-            CanonicalField.INPUT_FORMAT: "input-format",
-            CanonicalField.TRANSACTION_SET: "transaction-set",
-        }
-    )
+OUR_DUNS = "123456789"
+SERVER_ID = "coolhost.example.com"
 
 
 @pytest.fixture
 def settings(gnupg_home, monkeypatch):
     monkeypatch.setenv("TEST_US_PASSPHRASE", "us-passphrase")
     return Settings(
-        identity=IdentityConfig(name="MyCompany", duns="123456789"),
+        identity=IdentityConfig(name="MyCompany", duns=OUR_DUNS),
         server=ServerConfig(inbound_path="/inbound", max_body_size_bytes=26_214_400),
         crypto=CryptoConfig(
             private_key_path="unused",
@@ -63,7 +53,7 @@ def settings(gnupg_home, monkeypatch):
             digest_algo="SHA256",
             compress_algo="ZIP",
         ),
-        envelope=EnvelopeConfig(header_mapping=_header_mapping()),
+        envelope=EnvelopeConfig(server_id=SERVER_ID, default_version="1.9"),
         sinks=SinksConfig(require_at_least_one_durable_success=True),
         internal_api=InternalApiConfig(
             username_env="TEST_INTERNAL_API_USERNAME", password_env="TEST_INTERNAL_API_PASSWORD"
@@ -86,13 +76,27 @@ def partner(monkeypatch):
 
 
 @pytest.fixture
+def refnum_partner(monkeypatch):
+    monkeypatch.setenv("TEST_REFNUM_PARTNER_IN_KEY", "refnum-partner-inbound-key")
+    return PartnerConfig(
+        name="refnum-pipeline",
+        duns="111222333",
+        endpoint_url="https://refnum-partner.example.com/edi/receiver-endpoint",
+        pgp_public_key_path="unused",
+        outbound_auth=BasicAuthConfig(username="u", password_env="TEST_REFNUM_PARTNER_OUT_PW_UNUSED"),
+        inbound_auth=ApiKeyAuthConfig(key_env="TEST_REFNUM_PARTNER_IN_KEY"),
+        envelope_overrides=EnvelopeOverrides(use_refnum=True),
+    )
+
+
+@pytest.fixture
 def partners(partner):
     return PartnerRegistry([partner])
 
 
 @pytest.fixture
 def fingerprints(us_key, partner_key):
-    return {"_self": us_key, PARTNER_NAME: partner_key}
+    return {"_self": us_key, PARTNER_NAME: partner_key, "refnum-pipeline": partner_key}
 
 
 @dataclass
@@ -110,18 +114,29 @@ class RecordingSink:
 class FakeMessageTracker:
     def __init__(self):
         self.records: dict[uuid.UUID, MessageRecord] = {}
-        self._seen: set[tuple[str, str, str]] = set()
+        self._seen_digest: set[tuple[str, str, str]] = set()
+        self._seen_refnum: set[tuple[str, str, str]] = set()
+        self._next_trans_id = 0
+
+    async def next_trans_id(self) -> int:
+        self._next_trans_id += 1
+        return self._next_trans_id
 
     async def find_duplicate(self, partner_name, content_digest, direction) -> bool:
-        return (partner_name, content_digest, direction) in self._seen
+        return (partner_name, content_digest, direction) in self._seen_digest
+
+    async def find_refnum_reuse(self, partner_name, refnum, direction) -> bool:
+        return (partner_name, refnum, direction) in self._seen_refnum
 
     async def create(self, record: MessageRecord) -> uuid.UUID:
         message_id = uuid.uuid4()
         self.records[message_id] = record
-        self._seen.add((record.partner_name, record.content_digest, record.direction))
+        self._seen_digest.add((record.partner_name, record.content_digest, record.direction))
+        if record.refnum:
+            self._seen_refnum.add((record.partner_name, record.refnum, record.direction))
         return message_id
 
-    async def update_status(self, message_id, *, status, error_code=None, receipt_verified=None):
+    async def update_status(self, message_id, *, status, error_code=None, receipt_verified=None, **_kwargs):
         record = self.records[message_id]
         record.status = status
         record.error_code = error_code
@@ -153,40 +168,58 @@ def build_client(settings, partners, gpg_service, fingerprints, tracker, sinks) 
     return TestClient(app)
 
 
-def _valid_headers(**overrides) -> dict[str, str]:
-    headers = {
-        "version": "4.0",
-        "from-id": PARTNER_DUNS,
-        "to-id": "123456789",
-        "input-format": "X12",
-        "transaction-set": "873",
-        "authorization": "Bearer partner-inbound-key",
-    }
+def _envelope_fields(**overrides) -> EnvelopeFields:
+    defaults = dict(
+        from_id=PARTNER_DUNS,
+        to_id=OUR_DUNS,
+        version="1.9",
+        receipt_disposition_to=PARTNER_DUNS,
+        input_format=InputFormat.X12,
+        receipt_security_selection="signed-receipt-protocol=required,pgp-signature;signed-receipt-micalg=required,sha256",
+        transaction_set="NOM00001",
+    )
+    defaults.update(overrides)
+    return EnvelopeFields(**defaults)
+
+
+def _build_body(
+    gpg_service: GpgService,
+    us_key: str,
+    signer_key: str,
+    passphrase: str,
+    payload: bytes = b"ISA*00*...",
+    fields: EnvelopeFields | None = None,
+) -> tuple[bytes, str]:
+    ciphertext = gpg_service.encrypt_and_sign(
+        payload, recipient_fingerprint=us_key, signer_fingerprint=signer_key, passphrase=passphrase
+    )
+    return build_multipart_body(fields or _envelope_fields(), ciphertext)
+
+
+def _auth_headers(**overrides) -> dict[str, str]:
+    headers = {"authorization": "Bearer partner-inbound-key"}
     headers.update(overrides)
     return headers
 
 
-def _encrypt(gpg_service: GpgService, us_key: str, signer_key: str, passphrase: str, payload: bytes = b"ISA*00*...") -> bytes:
-    return gpg_service.encrypt_and_sign(
-        payload, recipient_fingerprint=us_key, signer_fingerprint=signer_key, passphrase=passphrase
-    )
-
-
-def _decode_receipt(gpg_service: GpgService, us_key: str, response_body: bytes) -> Receipt:
-    result = gpg_service.verify_message(response_body, expected_fingerprint=us_key)
+def _decode_receipt(gpg_service: GpgService, us_key: str, response) -> NaesbReceipt:
+    content_type = response.headers["content-type"]
+    report_body, report_content_type, signature = parse_signed_mime(response.content, content_type)
+    result = gpg_service.verify_detached(report_body, signature, expected_fingerprint=us_key)
     assert result.valid, "response was not validly signed by our own key"
-    return Receipt.decode(result.plaintext.decode("utf-8"))
+    return NaesbReceipt.decode_report_part(report_body, report_content_type)
 
 
 def test_happy_path_accepted(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key):
     client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
-    body = _encrypt(gpg_service, us_key, partner_key, "partner-passphrase")
+    body, content_type = _build_body(gpg_service, us_key, partner_key, "partner-passphrase")
 
-    response = client.post("/inbound", headers=_valid_headers(), content=body)
+    response = client.post("/inbound", headers={**_auth_headers(), "content-type": content_type}, content=body)
 
     assert response.status_code == 200
-    receipt = _decode_receipt(gpg_service, us_key, response.content)
-    assert receipt.status.value == "success"
+    receipt = _decode_receipt(gpg_service, us_key, response)
+    assert receipt.is_ok
+    assert receipt.server_id == SERVER_ID
     assert len(recording_sink.received) == 1
     assert recording_sink.received[0].plaintext == b"ISA*00*..."
     assert any(r.status == "accepted" for r in tracker.records.values())
@@ -194,66 +227,68 @@ def test_happy_path_accepted(settings, partners, gpg_service, fingerprints, trac
 
 def test_missing_authorization_returns_plain_401(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key):
     client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
-    body = _encrypt(gpg_service, us_key, partner_key, "partner-passphrase")
+    body, content_type = _build_body(gpg_service, us_key, partner_key, "partner-passphrase")
 
-    headers = _valid_headers()
-    del headers["authorization"]
-    response = client.post("/inbound", headers=headers, content=body)
+    response = client.post("/inbound", headers={"content-type": content_type}, content=body)
 
     assert response.status_code == 401
     # not a signed receipt -- shouldn't even parse as one
-    result = gpg_service.verify_message(response.content, expected_fingerprint=us_key)
-    assert not result.valid
+    with pytest.raises(Exception):
+        _decode_receipt(gpg_service, us_key, response)
 
 
 def test_wrong_authorization_key_returns_401(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key):
     client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
-    body = _encrypt(gpg_service, us_key, partner_key, "partner-passphrase")
+    body, content_type = _build_body(gpg_service, us_key, partner_key, "partner-passphrase")
 
-    response = client.post("/inbound", headers=_valid_headers(authorization="Bearer wrong-key"), content=body)
+    response = client.post(
+        "/inbound",
+        headers={**_auth_headers(authorization="Bearer wrong-key"), "content-type": content_type},
+        content=body,
+    )
     assert response.status_code == 401
 
 
-def test_from_id_mismatch_rejected_as_unknown_partner(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key):
+def test_from_mismatch_rejected_as_sender_not_associated(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key):
     client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
-    body = _encrypt(gpg_service, us_key, partner_key, "partner-passphrase")
+    body, content_type = _build_body(
+        gpg_service, us_key, partner_key, "partner-passphrase", fields=_envelope_fields(from_id="000000000")
+    )
 
-    response = client.post("/inbound", headers=_valid_headers(**{"from-id": "000000000"}), content=body)
+    response = client.post("/inbound", headers={**_auth_headers(), "content-type": content_type}, content=body)
 
     assert response.status_code == 200
-    receipt = _decode_receipt(gpg_service, us_key, response.content)
-    assert receipt.status.value == "validation-failed"
-    assert receipt.error_code.value == 104
+    receipt = _decode_receipt(gpg_service, us_key, response)
+    assert not receipt.is_ok
+    assert receipt.request_status.startswith("EEDM701")
 
 
 def test_decryption_failure_rejected(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key):
     client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
+    body, content_type = build_multipart_body(_envelope_fields(), b"not a valid PGP message at all")
 
-    response = client.post("/inbound", headers=_valid_headers(), content=b"not a valid PGP message at all")
+    response = client.post("/inbound", headers={**_auth_headers(), "content-type": content_type}, content=body)
 
     assert response.status_code == 200
-    receipt = _decode_receipt(gpg_service, us_key, response.content)
-    assert receipt.status.value == "validation-failed"
-    assert receipt.error_code.value == 101
+    receipt = _decode_receipt(gpg_service, us_key, response)
+    assert not receipt.is_ok
+    assert receipt.request_status.startswith("EEDM699")
 
 
 def test_wrong_signer_rejected_as_signature_failure(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key):
     client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
     # Encrypted correctly to us, but signed by a key that isn't the partner's.
-    body = _encrypt(gpg_service, us_key, us_key, "us-passphrase")
+    body, content_type = _build_body(gpg_service, us_key, us_key, "us-passphrase")
 
-    response = client.post("/inbound", headers=_valid_headers(), content=body)
+    response = client.post("/inbound", headers={**_auth_headers(), "content-type": content_type}, content=body)
 
     assert response.status_code == 200
-    receipt = _decode_receipt(gpg_service, us_key, response.content)
-    assert receipt.status.value == "validation-failed"
-    assert receipt.error_code.value == 102
+    receipt = _decode_receipt(gpg_service, us_key, response)
+    assert not receipt.is_ok
+    assert receipt.request_status.startswith("EEDM604")
 
 
 def test_weak_cipher_rejected(settings, partners, gpg_service, fingerprints, tracker, recording_sink, gnupg_home, us_key, partner_key):
-    # Modern GnuPG refuses to even produce a 3DES-encrypted message without
-    # this override -- it's only here to construct a deliberately
-    # noncompliant test payload, never used in production code.
     weak_gpg = GpgService(gnupg_home=gnupg_home, cipher_algo="3DES", digest_algo="SHA256", compress_algo="ZIP")
     result = weak_gpg.gpg.encrypt(
         b"ISA*00*...",
@@ -265,83 +300,119 @@ def test_weak_cipher_rejected(settings, partners, gpg_service, fingerprints, tra
         extra_args=[*weak_gpg._encrypt_extra_args(), "--allow-old-cipher-algos"],
     )
     assert result.ok, f"test setup failed to build a weak-cipher payload: {result.stderr}"
-    body = result.data
+    body, content_type = build_multipart_body(_envelope_fields(), result.data)
 
     client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
-    response = client.post("/inbound", headers=_valid_headers(), content=body)
+    response = client.post("/inbound", headers={**_auth_headers(), "content-type": content_type}, content=body)
 
     assert response.status_code == 200
-    receipt = _decode_receipt(gpg_service, us_key, response.content)
-    assert receipt.status.value == "validation-failed"
-    assert receipt.error_code.value == 106
+    receipt = _decode_receipt(gpg_service, us_key, response)
+    assert not receipt.is_ok
+    assert "GWX-WEAK-ALGO" in receipt.request_status
 
 
 def test_duplicate_message_rejected_on_second_delivery(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key):
     client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
-    body = _encrypt(gpg_service, us_key, partner_key, "partner-passphrase")
+    body, content_type = _build_body(gpg_service, us_key, partner_key, "partner-passphrase")
 
-    first = client.post("/inbound", headers=_valid_headers(), content=body)
-    second = client.post("/inbound", headers=_valid_headers(), content=body)
+    first = client.post("/inbound", headers={**_auth_headers(), "content-type": content_type}, content=body)
+    second = client.post("/inbound", headers={**_auth_headers(), "content-type": content_type}, content=body)
 
-    assert _decode_receipt(gpg_service, us_key, first.content).status.value == "success"
-    second_receipt = _decode_receipt(gpg_service, us_key, second.content)
-    assert second_receipt.status.value == "validation-failed"
-    assert second_receipt.error_code.value == 105
+    assert _decode_receipt(gpg_service, us_key, first).is_ok
+    second_receipt = _decode_receipt(gpg_service, us_key, second)
+    assert not second_receipt.is_ok
+    assert "GWX-DUPLICATE-DIGEST" in second_receipt.request_status
     assert len(recording_sink.received) == 1  # not delivered twice
+
+
+def test_duplicate_refnum_rejected_for_refnum_partner(settings, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key, refnum_partner):
+    partners = PartnerRegistry([refnum_partner])
+    client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
+    fields = _envelope_fields(from_id=refnum_partner.duns, refnum="1", refnum_orig="1")
+    body, content_type = _build_body(gpg_service, us_key, partner_key, "partner-passphrase", fields=fields)
+    headers = {"authorization": "Bearer refnum-partner-inbound-key", "content-type": content_type}
+
+    first = client.post("/inbound", headers=headers, content=body)
+    second = client.post("/inbound", headers=headers, content=body)
+
+    assert _decode_receipt(gpg_service, us_key, first).is_ok
+    second_receipt = _decode_receipt(gpg_service, us_key, second)
+    assert "EEDM121" in second_receipt.request_status
+
+
+def test_refnum_required_when_partner_uses_refnum(settings, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key, refnum_partner):
+    partners = PartnerRegistry([refnum_partner])
+    client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
+    fields = _envelope_fields(from_id=refnum_partner.duns)  # no refnum
+    body, content_type = _build_body(gpg_service, us_key, partner_key, "partner-passphrase", fields=fields)
+    headers = {"authorization": "Bearer refnum-partner-inbound-key", "content-type": content_type}
+
+    response = client.post("/inbound", headers=headers, content=body)
+    receipt = _decode_receipt(gpg_service, us_key, response)
+    assert "EEDM119" in receipt.request_status
 
 
 def test_sink_failure_rejected_when_no_durable_sink_succeeds(settings, partners, gpg_service, fingerprints, tracker, us_key, partner_key):
     failing_sink = RecordingSink(name="fs", durable=True, ok=False)
     client = build_client(settings, partners, gpg_service, fingerprints, tracker, [failing_sink])
-    body = _encrypt(gpg_service, us_key, partner_key, "partner-passphrase")
+    body, content_type = _build_body(gpg_service, us_key, partner_key, "partner-passphrase")
 
-    response = client.post("/inbound", headers=_valid_headers(), content=body)
+    response = client.post("/inbound", headers={**_auth_headers(), "content-type": content_type}, content=body)
 
     assert response.status_code == 200
-    receipt = _decode_receipt(gpg_service, us_key, response.content)
-    assert receipt.status.value == "validation-failed"
-    assert receipt.error_code.value == 107
+    receipt = _decode_receipt(gpg_service, us_key, response)
+    assert not receipt.is_ok
+    assert "GWX-SINK-FAILURE" in receipt.request_status
 
 
-def test_missing_header_rejected_as_invalid_header_parameters(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key):
+def test_missing_field_rejected_with_exact_eedm_code(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key):
     client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
-    body = _encrypt(gpg_service, us_key, partner_key, "partner-passphrase")
+    body, content_type = _build_body(gpg_service, us_key, partner_key, "partner-passphrase")
+    corrupted = body.replace(b'name="receipt-disposition-to"', b'name="receipt-disposition-to-x"')
 
-    headers = _valid_headers()
-    del headers["transaction-set"]
-    response = client.post("/inbound", headers=headers, content=body)
+    response = client.post("/inbound", headers={**_auth_headers(), "content-type": content_type}, content=corrupted)
 
     assert response.status_code == 200
-    receipt = _decode_receipt(gpg_service, us_key, response.content)
-    assert receipt.status.value == "validation-failed"
-    assert receipt.error_code.value == 103
+    receipt = _decode_receipt(gpg_service, us_key, response)
+    assert not receipt.is_ok
+    assert receipt.request_status.startswith("EEDM114")  # missing 'receipt-disposition-to'
+
+
+def test_trans_id_is_sequential(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key):
+    client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
+    body1, ct1 = _build_body(gpg_service, us_key, partner_key, "partner-passphrase", payload=b"first")
+    body2, ct2 = _build_body(gpg_service, us_key, partner_key, "partner-passphrase", payload=b"second")
+
+    r1 = client.post("/inbound", headers={**_auth_headers(), "content-type": ct1}, content=body1)
+    r2 = client.post("/inbound", headers={**_auth_headers(), "content-type": ct2}, content=body2)
+
+    receipt1 = _decode_receipt(gpg_service, us_key, r1)
+    receipt2 = _decode_receipt(gpg_service, us_key, r2)
+    assert int(receipt2.trans_id) == int(receipt1.trans_id) + 1
 
 
 def test_raw_request_logged_with_authorization_redacted(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key):
     client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
-    body = _encrypt(gpg_service, us_key, partner_key, "partner-passphrase")
+    body, content_type = _build_body(gpg_service, us_key, partner_key, "partner-passphrase")
 
     with capture_logs() as logs:
-        client.post("/inbound", headers=_valid_headers(), content=body)
+        client.post("/inbound", headers={**_auth_headers(), "content-type": content_type}, content=body)
 
     raw_events = [e for e in logs if e["event"] == "inbound_raw_request"]
     assert len(raw_events) == 1
     event = raw_events[0]
     assert event["method"] == "POST"
     assert event["headers"]["authorization"] == "[REDACTED]"
-    assert event["headers"]["transaction-set"] == "873"
     assert base64.b64decode(event["body_base64"]) == body
     assert event["body_length"] == len(body)
 
 
 def test_raw_request_logged_even_when_auth_fails(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key):
     client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
-    body = _encrypt(gpg_service, us_key, partner_key, "partner-passphrase")
-    headers = _valid_headers()
-    del headers["authorization"]
+    body, content_type = _build_body(gpg_service, us_key, partner_key, "partner-passphrase")
 
     with capture_logs() as logs:
-        response = client.post("/inbound", headers=headers, content=body)
+        response = client.post("/inbound", headers={"content-type": content_type}, content=body)
 
     assert response.status_code == 401
     assert any(e["event"] == "inbound_raw_request" for e in logs)
@@ -352,9 +423,9 @@ def test_raw_request_capture_disabled_via_config(settings, partners, gpg_service
         update={"logging": settings.logging.model_copy(update={"capture_raw_requests": False})}
     )
     client = build_client(settings_disabled, partners, gpg_service, fingerprints, tracker, [recording_sink])
-    body = _encrypt(gpg_service, us_key, partner_key, "partner-passphrase")
+    body, content_type = _build_body(gpg_service, us_key, partner_key, "partner-passphrase")
 
     with capture_logs() as logs:
-        client.post("/inbound", headers=_valid_headers(), content=body)
+        client.post("/inbound", headers={**_auth_headers(), "content-type": content_type}, content=body)
 
     assert not any(e["event"] == "inbound_raw_request" for e in logs)

@@ -1,6 +1,6 @@
 import pytest
 
-from app.crypto.gpg_wrapper import GpgError, GpgService
+from app.crypto.gpg_wrapper import GpgError
 from app.crypto.policy import WeakAlgorithmError, check_key_length, enforce_policy
 
 
@@ -73,30 +73,29 @@ def test_decrypt_wrong_passphrase_fails(gpg_service, us_key, partner_key, fresh_
     assert not result.ok
 
 
-def test_sign_and_verify_message_roundtrip(gpg_service, us_key):
-    plaintext = "receipt-status: success\nreceipt-timestamp: 2026-07-08T19:44:00Z\n"
-    signed = gpg_service.sign_message(plaintext, signer_fingerprint=us_key, passphrase="us-passphrase")
+def test_detached_sign_and_verify_roundtrip(gpg_service, us_key):
+    data = b"time-c=19960619082855*\r\nrequest-status=ok*\r\nserver-id=coolhost*\r\ntrans-id=1*\r\n"
+    signature = gpg_service.detached_sign(data, signer_fingerprint=us_key, passphrase="us-passphrase")
 
-    result = gpg_service.verify_message(signed, expected_fingerprint=us_key)
+    assert b"BEGIN PGP SIGNATURE" in signature
+
+    result = gpg_service.verify_detached(data, signature, expected_fingerprint=us_key)
     assert result.valid
-    assert result.plaintext.decode("utf-8") == plaintext
+    assert result.plaintext == data
 
 
-def test_verify_message_rejects_tampered_signature(gpg_service, us_key):
-    signed = gpg_service.sign_message("x", signer_fingerprint=us_key, passphrase="us-passphrase")
-    lines = signed.split(b"\n")
-    corrupted = bytearray(lines[3])
-    corrupted[5] = (corrupted[5] + 1) % 256
-    lines[3] = bytes(corrupted)
-    tampered = b"\n".join(lines)
+def test_verify_detached_rejects_tampered_data(gpg_service, us_key):
+    data = b"request-status=ok*"
+    signature = gpg_service.detached_sign(data, signer_fingerprint=us_key, passphrase="us-passphrase")
 
-    result = gpg_service.verify_message(tampered, expected_fingerprint=us_key)
+    result = gpg_service.verify_detached(b"request-status=EEDM999*", signature, expected_fingerprint=us_key)
     assert not result.valid
 
 
-def test_verify_message_rejects_wrong_expected_fingerprint(gpg_service, us_key, partner_key):
-    signed = gpg_service.sign_message("x", signer_fingerprint=us_key, passphrase="us-passphrase")
-    result = gpg_service.verify_message(signed, expected_fingerprint=partner_key)
+def test_verify_detached_rejects_wrong_expected_fingerprint(gpg_service, us_key, partner_key):
+    data = b"x"
+    signature = gpg_service.detached_sign(data, signer_fingerprint=us_key, passphrase="us-passphrase")
+    result = gpg_service.verify_detached(data, signature, expected_fingerprint=partner_key)
     assert not result.valid
 
 

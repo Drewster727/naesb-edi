@@ -10,10 +10,12 @@ def authenticate_inbound(authorization_header: str | None, partners: PartnerRegi
     configured inbound_auth (Basic -> Authorization: Basic ..., api_key ->
     Authorization: Bearer <key>). Checked before any GPG work.
 
-    naesb4.md doesn't define an inbound authentication scheme at all -- this
-    is a gateway-layer addition on top of the documented transport, since
-    something has to reject unauthenticated traffic before we spend CPU on
-    decryption.
+    HTTP Basic Authentication over Transport Layer Security *is* a real
+    NAESB requirement (WGQ Cybersecurity Related Standards v4.0, standards
+    12.3.14/12.3.28/12.3.29) -- `type: basic` in partners.yaml is the
+    spec-compliant, expected path. `type: api_key` (Bearer token) is a
+    gateway-only convenience extension with no basis in the standard; prefer
+    Basic unless a specific partner requires otherwise.
     """
     if not authorization_header:
         return None

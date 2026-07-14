@@ -1,45 +1,26 @@
 import base64
-import hashlib
 import ssl
-import uuid
-from dataclasses import dataclass
-from datetime import UTC, datetime
 
 import httpx
 import structlog
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from app.crypto.gpg_wrapper import GpgService
 from app.crypto.policy import WeakAlgorithmError, enforce_digest_policy
-from app.envelope.codec import build_headers
-from app.envelope.fields import EnvelopeFields, InputFormat
-from app.envelope.mapping import merge
-from app.envelope.receipt import Receipt as ReceiptModel
-from app.envelope.receipt import ReceiptDecodeError, ReceiptStatus
+from app.envelope.fields import RECEIPT_REPORT_TYPE_LITERAL, EnvelopeFields, InputFormat
+from app.envelope.multipart_codec import build_multipart_body
+from app.envelope.receipt import NaesbReceipt, ReceiptDecodeError, parse_signed_mime
 from app.partners import ApiKeyAuthConfig, BasicAuthConfig, PartnerConfig
 from app.settings import Settings
-from app.tracking.models import MessageRecord
-from app.tracking.repository import MessageTracker
+from app.tracking.models import OutboundJob
 
 logger = structlog.get_logger()
 
 
-class OutboundDeliveryError(Exception):
-    """Raised when a transmission could not be delivered and confirmed after
-    all retry attempts. The message may or may not have reached the partner --
-    the receipt was never verified, so it must be treated as unacknowledged."""
-
-
-class ReceiptUnverifiedError(Exception):
-    """Internal signal to trigger a retry: got an HTTP response, but its
-    signature didn't verify (or verified but wasn't decodable), so we can't
-    trust whatever `receipt-status` it claims."""
-
-
-@dataclass
-class SendResult:
-    receipt: ReceiptModel
-    message_id: uuid.UUID
+class DeliveryAttemptError(Exception):
+    """A single delivery attempt failed (network/HTTP error, or the
+    partner's receipt couldn't be verified/decoded). The caller (the
+    worker) decides whether to retry or declare an Exchange Failure based
+    on the job's remaining retry schedule."""
 
 
 def _build_transport(settings: Settings) -> httpx.AsyncHTTPTransport:
@@ -60,112 +41,69 @@ def _auth_header(auth: BasicAuthConfig | ApiKeyAuthConfig) -> dict[str, str]:
     return {"authorization": f"Bearer {auth.key}"}
 
 
-async def send_message(
+def envelope_fields_from_job(job: OutboundJob, settings: Settings) -> EnvelopeFields:
+    return EnvelopeFields(
+        from_id=job.from_id,
+        to_id=job.to_id,
+        version=job.version,
+        receipt_disposition_to=job.from_id,
+        receipt_report_type=RECEIPT_REPORT_TYPE_LITERAL,
+        input_format=InputFormat(job.input_format),
+        receipt_security_selection=settings.envelope.receipt_security_selection,
+        transaction_set=job.transaction_set,
+        refnum=job.refnum,
+        refnum_orig=job.refnum_orig,
+    )
+
+
+async def send_once(
+    job: OutboundJob,
     partner: PartnerConfig,
-    payload: bytes,
-    input_format: InputFormat,
-    transaction_set: str,
     settings: Settings,
     gpg: GpgService,
-    fingerprints: dict[str, str],
-    tracker: MessageTracker,
-) -> SendResult:
-    fields = EnvelopeFields(
-        version=settings.envelope.default_version,
-        from_id=settings.identity.duns,
-        to_id=partner.duns,
-        input_format=input_format,
-        transaction_set=transaction_set,
-    )
-    mapping = merge(
-        settings.envelope.header_mapping,
-        partner.envelope_overrides.header_mapping if partner.envelope_overrides else None,
-    )
-    headers = build_headers(fields, mapping)
-    headers["content-type"] = "application/octet-stream"
+    partner_fingerprint: str,
+) -> NaesbReceipt:
+    """Perform exactly one delivery attempt: build the ordered
+    `multipart/form-data` request, POST it, and verify + decode the
+    partner's `multipart/signed` `gisb-acknowledgement-receipt` response.
+    Raises DeliveryAttemptError on any failure -- retry/Exchange-Failure
+    decisions live in the caller (app/worker.py)."""
+    fields = envelope_fields_from_job(job, settings)
+    body, content_type = build_multipart_body(fields, job.payload_ciphertext)
+
+    headers = {"content-type": content_type}
     headers.update(_auth_header(partner.outbound_auth))
 
-    # Encrypt once; the same ciphertext (and thus the same content digest) is
-    # reused across every retry attempt so partner-side dedup still works.
-    encrypted = gpg.encrypt_and_sign(
-        payload,
-        recipient_fingerprint=fingerprints[partner.name],
-        signer_fingerprint=fingerprints["_self"],
-        passphrase=settings.crypto.passphrase,
-    )
-    content_digest = hashlib.sha256(encrypted).hexdigest()
-
-    record = MessageRecord(
-        direction="outbound",
-        partner_name=partner.name,
-        content_digest=content_digest,
-        transaction_set=transaction_set,
-        input_format=input_format.value,
-        status="sending",
-        sent_at=datetime.now(UTC),
-    )
-    message_id = await tracker.create(record)
-
-    sender = _retrying_sender(settings)
+    transport = _build_transport(settings)
     try:
-        receipt = await sender(partner, headers, encrypted, settings, gpg, fingerprints[partner.name])
-    except (httpx.HTTPError, ReceiptUnverifiedError) as exc:
-        logger.error("outbound_unacknowledged", partner=partner.name, digest=content_digest, error=str(exc))
-        await tracker.update_status(message_id, status="unacknowledged", receipt_verified=False)
-        raise OutboundDeliveryError(str(exc)) from exc
-
-    if receipt.status == ReceiptStatus.SUCCESS:
-        await tracker.update_status(message_id, status="delivered", receipt_verified=True)
-    else:
-        logger.warning(
-            "outbound_rejected_by_partner",
-            partner=partner.name,
-            digest=content_digest,
-            error_code=receipt.error_code,
-        )
-        await tracker.update_status(
-            message_id,
-            status="failed_nack",
-            error_code=receipt.error_code.value if receipt.error_code else None,
-            receipt_verified=True,
-        )
-
-    return SendResult(receipt=receipt, message_id=message_id)
-
-
-def _retrying_sender(settings: Settings):
-    @retry(
-        stop=stop_after_attempt(settings.outbound.retry_max_attempts),
-        wait=wait_fixed(settings.outbound.retry_backoff_seconds),
-        retry=retry_if_exception_type((httpx.HTTPError, ReceiptUnverifiedError)),
-        reraise=True,
-    )
-    async def _send(
-        partner: PartnerConfig,
-        headers: dict[str, str],
-        encrypted: bytes,
-        settings: Settings,
-        gpg: GpgService,
-        partner_fingerprint: str,
-    ) -> ReceiptModel:
-        transport = _build_transport(settings)
-        async with httpx.AsyncClient(timeout=settings.outbound.timeout_seconds, transport=transport) as client:
-            response = await client.post(partner.endpoint_url, headers=headers, content=encrypted)
+        async with httpx.AsyncClient(
+            timeout=settings.outbound.timeout_seconds, transport=transport
+        ) as client:
+            response = await client.post(partner.endpoint_url, headers=headers, content=body)
             response.raise_for_status()
-        raw_response = response.content
+    except httpx.HTTPError as exc:
+        raise DeliveryAttemptError(f"HTTP request failed: {exc}") from exc
 
-        verify_result = gpg.verify_message(raw_response, partner_fingerprint)
-        if not verify_result.valid:
-            raise ReceiptUnverifiedError("partner receipt signature missing or invalid")
+    response_content_type = response.headers.get("content-type", "")
+    try:
+        report_body, report_content_type, signature = parse_signed_mime(
+            response.content, response_content_type
+        )
+    except ReceiptDecodeError as exc:
+        raise DeliveryAttemptError(
+            f"partner response was not a valid multipart/signed receipt: {exc}"
+        ) from exc
 
-        try:
-            enforce_digest_policy(verify_result.algo_info.hash_algo, {settings.crypto.digest_algo})
-        except WeakAlgorithmError as exc:
-            raise ReceiptUnverifiedError(f"partner receipt used a weak digest algorithm: {exc}") from exc
+    verify_result = gpg.verify_detached(report_body, signature, partner_fingerprint)
+    if not verify_result.valid:
+        raise DeliveryAttemptError("partner receipt signature missing or invalid")
 
-        try:
-            return ReceiptModel.decode(verify_result.plaintext.decode("utf-8"))
-        except (ReceiptDecodeError, UnicodeDecodeError) as exc:
-            raise ReceiptUnverifiedError(f"partner receipt body was not decodable: {exc}") from exc
+    try:
+        enforce_digest_policy(verify_result.algo_info.hash_algo, {settings.crypto.digest_algo})
+    except WeakAlgorithmError as exc:
+        raise DeliveryAttemptError(f"partner receipt used a weak digest algorithm: {exc}") from exc
 
-    return _send
+    try:
+        return NaesbReceipt.decode_report_part(report_body, report_content_type)
+    except ReceiptDecodeError as exc:
+        raise DeliveryAttemptError(f"partner receipt body was not decodable: {exc}") from exc

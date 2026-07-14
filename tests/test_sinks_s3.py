@@ -15,7 +15,13 @@ def _message(**overrides) -> InboundMessage:
         partner_name="acme-pipeline",
         content_digest="abc123def456" + "0" * 52,
         envelope=EnvelopeFields(
-            version="4.0", from_id="987654321", to_id="123456789", input_format=InputFormat.X12, transaction_set="873"
+            version="1.9",
+            from_id="987654321",
+            to_id="123456789",
+            receipt_disposition_to="987654321",
+            input_format=InputFormat.X12,
+            receipt_security_selection="signed-receipt-protocol=required,pgp-signature;signed-receipt-micalg=required,sha256",
+            transaction_set="NOM00001",
         ),
         plaintext=b"ISA*00*...",
         received_at=datetime(2026, 7, 8, 19, 30, 0, tzinfo=UTC),

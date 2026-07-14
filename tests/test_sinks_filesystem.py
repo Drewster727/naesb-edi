@@ -11,7 +11,13 @@ def _message(**overrides) -> InboundMessage:
         partner_name="acme-pipeline",
         content_digest="abc123def456" + "0" * 52,
         envelope=EnvelopeFields(
-            version="4.0", from_id="987654321", to_id="123456789", input_format=InputFormat.X12, transaction_set="873"
+            version="1.9",
+            from_id="987654321",
+            to_id="123456789",
+            receipt_disposition_to="987654321",
+            input_format=InputFormat.X12,
+            receipt_security_selection="signed-receipt-protocol=required,pgp-signature;signed-receipt-micalg=required,sha256",
+            transaction_set="NOM00001",
         ),
         plaintext=b"ISA*00*...",
         received_at=datetime(2026, 7, 8, 19, 30, 0, tzinfo=UTC),
@@ -31,13 +37,19 @@ def test_filesystem_sink_writes_file(tmp_path):
     written = list((tmp_path / "987654321").iterdir())
     assert len(written) == 1
     assert written[0].read_bytes() == b"ISA*00*..."
-    assert "873" in written[0].name
+    assert "NOM00001" in written[0].name
 
 
 def test_filesystem_sink_creates_duns_subdirectory(tmp_path):
     sink = FilesystemSink(base_dir=str(tmp_path))
     envelope = EnvelopeFields(
-        version="4.0", from_id="111222333", to_id="123456789", input_format=InputFormat.X12, transaction_set="873"
+        version="1.9",
+        from_id="111222333",
+        to_id="123456789",
+        receipt_disposition_to="111222333",
+        input_format=InputFormat.X12,
+        receipt_security_selection="signed-receipt-protocol=required,pgp-signature;signed-receipt-micalg=required,sha256",
+        transaction_set="NOM00001",
     )
     asyncio.run(sink.deliver(_message(partner_name="other-partner", envelope=envelope)))
     assert (tmp_path / "111222333").is_dir()

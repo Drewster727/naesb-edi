@@ -17,9 +17,9 @@ from app.dependencies import (
     get_sinks,
     get_tracker,
 )
-from app.envelope.codec import EnvelopeError, parse_headers
-from app.envelope.mapping import merge
-from app.envelope.receipt import ReasonCode, Receipt
+from app.envelope.error_codes import ErrorCode, GatewayExtensionCode, NaesbErrorCode, error_code_for_field
+from app.envelope.multipart_codec import EnvelopeError, parse_multipart_form
+from app.envelope.receipt import NaesbReceipt, build_signed_mime
 from app.inbound.auth import authenticate_inbound
 from app.message import InboundMessage
 from app.partners import PartnerRegistry
@@ -49,13 +49,14 @@ async def receive(
         raise HTTPException(status_code=413, detail="payload too large")
 
     body = await request.body()
+    # Standard 12.3.5: the Receiver generates the receipt timestamp
+    # immediately upon successful receipt of a complete file, prior to any
+    # further processing (auth, parsing, decryption).
+    received_at = datetime.now(UTC)
+
     if len(body) > settings.server.max_body_size_bytes:
         raise HTTPException(status_code=413, detail="payload too large")
 
-    # Capture the complete raw request -- before auth/parsing/decryption --
-    # so a partner's transmission can be inspected even if it fails before we
-    # can make sense of it. The Authorization header is redacted since it
-    # carries the partner's cleartext inbound credential.
     if settings.logging.capture_raw_requests:
         logger.info(
             "inbound_raw_request",
@@ -68,36 +69,57 @@ async def receive(
         )
 
     # Step 1: transport-level auth, before any GPG work. Fails closed with a
-    # plain (unsigned) HTTP error -- this is not a protocol-level NACK.
+    # plain (unsigned) HTTP error -- this is not a protocol-level NACK. HTTP
+    # Basic Authentication over TLS *is* a real NAESB requirement (standards
+    # 12.3.14/12.3.28/12.3.29); see app/inbound/auth.py for the (gateway-only)
+    # Bearer/API-key alternative.
     partner = authenticate_inbound(request.headers.get("authorization"), partners)
     if partner is None:
         raise HTTPException(status_code=401, detail="unauthorized")
 
-    mapping = merge(
-        settings.envelope.header_mapping,
-        partner.envelope_overrides.header_mapping if partner.envelope_overrides else None,
-    )
+    # trans-id is "assigned by the Server upon processing before being
+    # passed to the decryption process" -- assign it once we know who's
+    # authenticated, and reuse it across every receipt path below.
+    trans_id = await tracker.next_trans_id()
 
-    received_at = datetime.now(UTC)
-    content_digest = hashlib.sha256(body).hexdigest()
+    def reject(code: ErrorCode, message: str | None = None) -> Response:
+        logger.info(
+            "inbound_rejected", partner=partner.name, trans_id=trans_id, error_code=code.value
+        )
+        receipt = NaesbReceipt.rejected(
+            settings.envelope.server_id, trans_id, code, message, time_c=received_at
+        )
+        return _signed_receipt(gpg, fingerprints, settings, receipt)
 
-    def reject(code: ReasonCode, message: str | None = None) -> Response:
-        logger.info("inbound_rejected", partner=partner.name, digest=content_digest, error_code=code.value)
-        return _signed_receipt(gpg, fingerprints, settings, Receipt.rejected(code, message))
-
-    # Step 2: parse the NAESB transport headers.
+    # Step 2: parse the multipart/form-data envelope + unwrap input-data.
     try:
-        fields = parse_headers(request.headers, mapping)
+        form = await request.form()
+        fields, ciphertext = await parse_multipart_form(form)
     except EnvelopeError as exc:
-        return reject(ReasonCode.INVALID_HEADER_PARAMETERS, str(exc))
+        code = error_code_for_field(exc.field, exc.problem)
+        return reject(code, str(exc))
+    except Exception as exc:  # noqa: BLE001 - malformed multipart body entirely
+        return reject(NaesbErrorCode.NO_PARAMETERS_SUPPLIED, f"malformed multipart body: {exc}")
 
-    # Step 3: the authenticated partner's DUNS must match the claimed from-id.
+    # Step 3: the authenticated partner's DUNS must match the claimed 'from'.
     if fields.from_id != partner.duns:
-        return reject(ReasonCode.UNKNOWN_PARTNER, "from-id does not match the authenticated partner")
+        return reject(
+            NaesbErrorCode.SENDER_NOT_ASSOCIATED, "'from' does not match the authenticated partner"
+        )
 
-    # Step 4: dedupe on content digest -- naesb4.md defines no message-id header.
-    if await tracker.find_duplicate(partner.name, content_digest, "inbound"):
-        return reject(ReasonCode.DUPLICATE_MESSAGE)
+    if partner.use_refnum and not fields.refnum:
+        return reject(NaesbErrorCode.REFNUM_NOT_PRESENT)
+
+    content_digest = hashlib.sha256(ciphertext).hexdigest()
+
+    # Step 4: dedupe. Primarily by (partner, refnum) when this partner uses
+    # refnum tracking (the spec's own mechanism); otherwise by a digest of
+    # the extracted ciphertext -- the spec defines no message-id header.
+    if partner.use_refnum and fields.refnum:
+        if await tracker.find_refnum_reuse(partner.name, fields.refnum, "inbound"):
+            return reject(NaesbErrorCode.DUPLICATE_REFNUM)
+    elif await tracker.find_duplicate(partner.name, content_digest, "inbound"):
+        return reject(GatewayExtensionCode.DUPLICATE_DIGEST)
 
     record = MessageRecord(
         direction="inbound",
@@ -105,6 +127,9 @@ async def receive(
         content_digest=content_digest,
         transaction_set=fields.transaction_set,
         input_format=fields.input_format.value,
+        trans_id=trans_id,
+        refnum=fields.refnum,
+        refnum_orig=fields.refnum_orig,
         raw_headers=dict(request.headers),
         received_at=received_at,
         status="processing",
@@ -112,30 +137,36 @@ async def receive(
     try:
         message_id = await tracker.create(record)
     except UniqueViolation:
-        # find_duplicate() above and this insert aren't atomic -- a concurrent
-        # identical request can race between them. The UNIQUE constraint on
-        # (partner_name, content_digest, direction) is the real backstop.
-        return reject(ReasonCode.DUPLICATE_MESSAGE)
+        # find_duplicate()/find_refnum_reuse() above and this insert aren't
+        # atomic -- a concurrent identical request can race between them.
+        # The UNIQUE constraint on (partner_name, content_digest, direction)
+        # is the real backstop.
+        return reject(GatewayExtensionCode.DUPLICATE_DIGEST)
 
-    # Step 5: decrypt + verify signature.
-    decrypt_result = gpg.decrypt_and_verify(body, settings.crypto.passphrase)
+    # Step 5: decrypt + verify signature. GnuPG doesn't always discriminate
+    # between "public key invalid", "not encrypted", and "truncated" --
+    # per the spec's own "Pre-validation before Decryption" guidance, a
+    # generic decryption error (EEDM699) is used when finer classification
+    # isn't reliably available.
+    decrypt_result = gpg.decrypt_and_verify(ciphertext, settings.crypto.passphrase)
     if not decrypt_result.ok:
         await tracker.update_status(
-            message_id, status="rejected", error_code=ReasonCode.DECRYPTION_FAILED.value
+            message_id, status="rejected", error_code=NaesbErrorCode.DECRYPTION_ERROR.value
         )
-        return reject(ReasonCode.DECRYPTION_FAILED)
+        return reject(NaesbErrorCode.DECRYPTION_ERROR)
 
     partner_fingerprint = fingerprints.get(partner.name)
     if not decrypt_result.signature_valid or decrypt_result.signer_fingerprint != partner_fingerprint:
         await tracker.update_status(
             message_id,
             status="rejected",
-            error_code=ReasonCode.SIGNATURE_VERIFICATION_FAILED.value,
+            error_code=NaesbErrorCode.SIGNATURE_NOT_MATCHED.value,
             receipt_verified=False,
         )
-        return reject(ReasonCode.SIGNATURE_VERIFICATION_FAILED)
+        return reject(NaesbErrorCode.SIGNATURE_NOT_MATCHED)
 
-    # Step 6: enforce modern-OpenPGP-only policy.
+    # Step 6: enforce this gateway's local cryptographic policy (NAESB
+    # itself only mandates a minimum RSA key length -- see policy.py).
     try:
         enforce_policy(
             decrypt_result.algo_info,
@@ -144,9 +175,9 @@ async def receive(
         )
     except WeakAlgorithmError as exc:
         await tracker.update_status(
-            message_id, status="rejected", error_code=ReasonCode.WEAK_ALGORITHM.value
+            message_id, status="rejected", error_code=GatewayExtensionCode.WEAK_ALGORITHM.value
         )
-        return reject(ReasonCode.WEAK_ALGORITHM, str(exc))
+        return reject(GatewayExtensionCode.WEAK_ALGORITHM, str(exc))
 
     # Step 7: fan out to configured sinks.
     inbound_message = InboundMessage(
@@ -165,14 +196,15 @@ async def receive(
         sinks, sink_results
     ):
         await tracker.update_status(
-            message_id, status="rejected", error_code=ReasonCode.SINK_FAILURE.value
+            message_id, status="rejected", error_code=GatewayExtensionCode.SINK_FAILURE.value
         )
-        return reject(ReasonCode.SINK_FAILURE)
+        return reject(GatewayExtensionCode.SINK_FAILURE)
 
-    # Step 9: accepted.
+    # Step 8: accepted.
     await tracker.update_status(message_id, status="accepted", receipt_verified=True)
-    logger.info("inbound_accepted", partner=partner.name, digest=content_digest)
-    return _signed_receipt(gpg, fingerprints, settings, Receipt.accepted())
+    logger.info("inbound_accepted", partner=partner.name, digest=content_digest, trans_id=trans_id)
+    receipt = NaesbReceipt.ok(settings.envelope.server_id, trans_id, time_c=received_at)
+    return _signed_receipt(gpg, fingerprints, settings, receipt)
 
 
 def _redact_headers(headers: Mapping[str, str]) -> dict[str, str]:
@@ -183,7 +215,10 @@ def _redact_headers(headers: Mapping[str, str]) -> dict[str, str]:
 
 
 def _signed_receipt(
-    gpg: GpgService, fingerprints: dict[str, str], settings: Settings, receipt: Receipt
+    gpg: GpgService, fingerprints: dict[str, str], settings: Settings, receipt: NaesbReceipt
 ) -> Response:
-    signed = gpg.sign_message(receipt.encode(), fingerprints["_self"], settings.crypto.passphrase)
-    return Response(content=signed, media_type="application/octet-stream", status_code=200)
+    report_body, report_content_type = receipt.encode_report_part()
+    signature = gpg.detached_sign(report_body, fingerprints["_self"], settings.crypto.passphrase)
+    micalg = f"pgp-{settings.crypto.digest_algo.lower()}"
+    signed_body, content_type = build_signed_mime(report_body, report_content_type, signature, micalg)
+    return Response(content=signed_body, media_type=content_type, status_code=200)

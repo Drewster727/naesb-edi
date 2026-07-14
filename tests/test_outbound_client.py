@@ -1,14 +1,11 @@
-import uuid
-
 import httpx
 import pytest
 import respx
 
 from app.crypto.gpg_wrapper import GpgService
-from app.envelope.fields import CanonicalField, InputFormat
-from app.envelope.mapping import HeaderMapping
-from app.envelope.receipt import ReasonCode, Receipt
-from app.outbound.client import OutboundDeliveryError, send_message
+from app.envelope.error_codes import NaesbErrorCode
+from app.envelope.receipt import NaesbReceipt, build_signed_mime
+from app.outbound.client import DeliveryAttemptError, send_once
 from app.partners import ApiKeyAuthConfig, BasicAuthConfig, PartnerConfig
 from app.settings import (
     CryptoConfig,
@@ -20,21 +17,9 @@ from app.settings import (
     Settings,
     SinksConfig,
 )
-from app.tracking.models import MessageRecord
+from app.tracking.models import OutboundJob
 
 PARTNER_ENDPOINT = "https://partner.example.com/edi/receiver-endpoint"
-
-
-def _header_mapping() -> HeaderMapping:
-    return HeaderMapping(
-        {
-            CanonicalField.VERSION: "version",
-            CanonicalField.FROM_ID: "from-id",
-            CanonicalField.TO_ID: "to-id",
-            CanonicalField.INPUT_FORMAT: "input-format",
-            CanonicalField.TRANSACTION_SET: "transaction-set",
-        }
-    )
 
 
 @pytest.fixture
@@ -51,12 +36,12 @@ def settings(gnupg_home, monkeypatch):
             digest_algo="SHA256",
             compress_algo="ZIP",
         ),
-        envelope=EnvelopeConfig(header_mapping=_header_mapping()),
+        envelope=EnvelopeConfig(server_id="us.example.com", default_version="1.9"),
         sinks=SinksConfig(),
         internal_api=InternalApiConfig(
             username_env="TEST_INTERNAL_API_USERNAME", password_env="TEST_INTERNAL_API_PASSWORD"
         ),
-        outbound=OutboundConfig(timeout_seconds=5, retry_max_attempts=2, retry_backoff_seconds=0),
+        outbound=OutboundConfig(timeout_seconds=5),
         partners_file="unused",
     )
 
@@ -79,120 +64,92 @@ def fingerprints(us_key, partner_key):
     return {"_self": us_key, "acme-pipeline": partner_key}
 
 
-class FakeMessageTracker:
-    def __init__(self):
-        self.records: dict[uuid.UUID, MessageRecord] = {}
-
-    async def find_duplicate(self, partner_name, content_digest, direction) -> bool:
-        return False
-
-    async def create(self, record: MessageRecord) -> uuid.UUID:
-        message_id = uuid.uuid4()
-        self.records[message_id] = record
-        return message_id
-
-    async def update_status(self, message_id, *, status, error_code=None, receipt_verified=None):
-        record = self.records[message_id]
-        record.status = status
-        record.error_code = error_code
-        record.receipt_verified = receipt_verified
-
-    async def update_sinks_status(self, message_id, sinks_status):
-        pass
-
-
 @pytest.fixture
-def tracker():
-    return FakeMessageTracker()
+def job(gpg_service, us_key):
+    ciphertext = gpg_service.encrypt_and_sign(
+        b"ISA*00*...", recipient_fingerprint=us_key, signer_fingerprint=us_key, passphrase="us-passphrase"
+    )
+    return OutboundJob(
+        id="job-1",
+        partner_name="acme-pipeline",
+        from_id="123456789",
+        to_id="987654321",
+        version="1.9",
+        input_format="X12",
+        transaction_set="NOM00001",
+        payload_ciphertext=ciphertext,
+        content_digest="unused",
+    )
 
 
-def _signed_receipt_body(gpg_service: GpgService, signer_key: str, passphrase: str, receipt: Receipt) -> bytes:
-    return gpg_service.sign_message(receipt.encode(), signer_fingerprint=signer_key, passphrase=passphrase)
+def _signed_receipt_response(
+    gpg_service: GpgService, signer_key: str, passphrase: str, receipt: NaesbReceipt
+) -> tuple[bytes, str]:
+    report_body, report_content_type = receipt.encode_report_part()
+    signature = gpg_service.detached_sign(report_body, signer_fingerprint=signer_key, passphrase=passphrase)
+    return build_signed_mime(report_body, report_content_type, signature, "pgp-sha256")
 
 
 @respx.mock
-async def test_send_message_success(settings, partner, gpg_service, fingerprints, tracker, us_key, partner_key):
-    receipt_body = _signed_receipt_body(gpg_service, partner_key, "partner-passphrase", Receipt.accepted())
-    route = respx.post(PARTNER_ENDPOINT).mock(return_value=httpx.Response(200, content=receipt_body))
-
-    result = await send_message(
-        partner, b"ISA*00*...", InputFormat.X12, "873", settings, gpg_service, fingerprints, tracker
+async def test_send_once_success(settings, partner, gpg_service, fingerprints, job, us_key, partner_key):
+    receipt_body, receipt_content_type = _signed_receipt_response(
+        gpg_service, partner_key, "partner-passphrase", NaesbReceipt.ok("their-host", 42)
+    )
+    route = respx.post(PARTNER_ENDPOINT).mock(
+        return_value=httpx.Response(200, content=receipt_body, headers={"content-type": receipt_content_type})
     )
 
-    assert result.receipt.status.value == "success"
+    receipt = await send_once(job, partner, settings, gpg_service, fingerprints["acme-pipeline"])
+
+    assert receipt.is_ok
+    assert receipt.trans_id == "42"
     assert route.called
     sent_request = route.calls.last.request
-    assert sent_request.headers["version"] == "4.0"
-    assert sent_request.headers["from-id"] == "123456789"
-    assert sent_request.headers["to-id"] == "987654321"
-    assert sent_request.headers["input-format"] == "X12"
-    assert sent_request.headers["transaction-set"] == "873"
-    assert sent_request.headers["content-type"] == "application/octet-stream"
+    assert sent_request.headers["content-type"].startswith("multipart/form-data")
     assert sent_request.headers["authorization"].startswith("Basic ")
-    # the wire body must be the encrypted ciphertext, never the plaintext payload
-    assert b"ISA*00*..." not in sent_request.content
-
-    record = next(iter(tracker.records.values()))
-    assert record.status == "delivered"
+    assert b'name="from"' in sent_request.content
+    assert b"ISA*00*..." not in sent_request.content  # wire body is ciphertext, never plaintext
 
 
 @respx.mock
-async def test_send_message_records_partner_rejection(settings, partner, gpg_service, fingerprints, tracker, partner_key):
-    receipt = Receipt.rejected(ReasonCode.INVALID_TRANSACTION_SET)
-    receipt_body = _signed_receipt_body(gpg_service, partner_key, "partner-passphrase", receipt)
-    respx.post(PARTNER_ENDPOINT).mock(return_value=httpx.Response(200, content=receipt_body))
-
-    result = await send_message(
-        partner, b"payload", InputFormat.X12, "873", settings, gpg_service, fingerprints, tracker
+async def test_send_once_records_partner_rejection(settings, partner, gpg_service, fingerprints, job, partner_key):
+    receipt = NaesbReceipt.rejected("their-host", 1, NaesbErrorCode.INVALID_TRANSACTION_SET)
+    receipt_body, receipt_content_type = _signed_receipt_response(gpg_service, partner_key, "partner-passphrase", receipt)
+    respx.post(PARTNER_ENDPOINT).mock(
+        return_value=httpx.Response(200, content=receipt_body, headers={"content-type": receipt_content_type})
     )
 
-    assert result.receipt.status.value == "validation-failed"
-    record = next(iter(tracker.records.values()))
-    assert record.status == "failed_nack"
+    result = await send_once(job, partner, settings, gpg_service, fingerprints["acme-pipeline"])
+    assert not result.is_ok
+    assert "EEDM108" in result.request_status
 
 
 @respx.mock
-async def test_send_message_retries_on_unverifiable_receipt_then_raises(settings, partner, gpg_service, fingerprints, tracker):
-    # Response isn't signed by anyone we trust -- every retry attempt sees the same thing.
-    route = respx.post(PARTNER_ENDPOINT).mock(return_value=httpx.Response(200, content=b"not a signed message"))
+async def test_send_once_raises_on_http_error(settings, partner, gpg_service, fingerprints, job):
+    respx.post(PARTNER_ENDPOINT).mock(return_value=httpx.Response(503))
 
-    with pytest.raises(OutboundDeliveryError):
-        await send_message(
-            partner, b"payload", InputFormat.X12, "873", settings, gpg_service, fingerprints, tracker
-        )
-
-    assert route.call_count == settings.outbound.retry_max_attempts
-    record = next(iter(tracker.records.values()))
-    assert record.status == "unacknowledged"
-    assert record.receipt_verified is False
+    with pytest.raises(DeliveryAttemptError):
+        await send_once(job, partner, settings, gpg_service, fingerprints["acme-pipeline"])
 
 
 @respx.mock
-async def test_send_message_retries_on_http_error_then_raises(settings, partner, gpg_service, fingerprints, tracker):
-    route = respx.post(PARTNER_ENDPOINT).mock(return_value=httpx.Response(503))
+async def test_send_once_raises_on_unverifiable_receipt(settings, partner, gpg_service, fingerprints, job):
+    respx.post(PARTNER_ENDPOINT).mock(return_value=httpx.Response(200, content=b"not a signed message"))
 
-    with pytest.raises(OutboundDeliveryError):
-        await send_message(
-            partner, b"payload", InputFormat.X12, "873", settings, gpg_service, fingerprints, tracker
-        )
-
-    assert route.call_count == settings.outbound.retry_max_attempts
+    with pytest.raises(DeliveryAttemptError):
+        await send_once(job, partner, settings, gpg_service, fingerprints["acme-pipeline"])
 
 
 @respx.mock
-async def test_send_message_encrypts_same_ciphertext_across_retries(settings, partner, gpg_service, fingerprints, tracker):
-    bodies_seen = []
+async def test_send_once_raises_when_signed_by_wrong_key(settings, partner, gpg_service, fingerprints, job, us_key):
+    # Signed validly, but by *our* key, not the partner's -- the partner's
+    # receipt must be signed by the partner.
+    receipt_body, receipt_content_type = _signed_receipt_response(
+        gpg_service, us_key, "us-passphrase", NaesbReceipt.ok("their-host", 1)
+    )
+    respx.post(PARTNER_ENDPOINT).mock(
+        return_value=httpx.Response(200, content=receipt_body, headers={"content-type": receipt_content_type})
+    )
 
-    def _capture(request):
-        bodies_seen.append(request.content)
-        return httpx.Response(503)
-
-    respx.post(PARTNER_ENDPOINT).mock(side_effect=_capture)
-
-    with pytest.raises(OutboundDeliveryError):
-        await send_message(
-            partner, b"payload", InputFormat.X12, "873", settings, gpg_service, fingerprints, tracker
-        )
-
-    assert len(bodies_seen) == settings.outbound.retry_max_attempts
-    assert len(set(bodies_seen)) == 1  # identical ciphertext reused, not re-encrypted per attempt
+    with pytest.raises(DeliveryAttemptError):
+        await send_once(job, partner, settings, gpg_service, fingerprints["acme-pipeline"])

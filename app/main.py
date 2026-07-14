@@ -18,7 +18,7 @@ from app.sinks.filesystem_sink import FilesystemSink
 from app.sinks.s3_sink import S3Sink
 from app.sinks.webhook_sink import WebhookSink
 from app.tracking.db import create_pool, run_migrations
-from app.tracking.repository import MessageTracker
+from app.tracking.repository import MessageTracker, OutboundJobRepository
 
 logger = structlog.get_logger()
 
@@ -80,6 +80,7 @@ async def lifespan(app: FastAPI):
     pool = await create_pool(settings.database.url)
     await run_migrations(pool)
     tracker = MessageTracker(pool)
+    job_repository = OutboundJobRepository(pool)
 
     sinks = _build_sinks(settings)
 
@@ -88,6 +89,7 @@ async def lifespan(app: FastAPI):
     app.state.gpg = gpg_service
     app.state.fingerprints = fingerprints
     app.state.tracker = tracker
+    app.state.job_repository = job_repository
     app.state.sinks = sinks
     app.state.db_pool = pool
 

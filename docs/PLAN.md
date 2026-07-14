@@ -2,16 +2,46 @@
 
 ## Context
 
-The existing EDI setup is a fork of OpenAS2, which only speaks AS2. NAESB 4.0 (Wholesale Gas Quadrant Business Practice Standards) does not use AS2 — it uses NAESB's own **Internet Electronic Transport (Internet ET)** protocol: PGP-encrypted payloads exchanged over HTTP(S), where each trading partner supplies the other with their PGP public key. This new project (`naesb-edi`) replaces/supplements the AS2 gateway with a purpose-built Internet ET gateway. No UI — purely an HTTP/API service, intended to sit between internal systems and external NAESB trading partners (interstate pipeline operators).
+The existing EDI setup is a fork of OpenAS2, which only speaks AS2. NAESB
+4.0 (Wholesale Gas Quadrant Business Practice Standards) does not use AS2 --
+it uses NAESB's own **Internet Electronic Transport (Internet ET)**
+protocol: PGP-encrypted payloads exchanged over HTTP(S) as a
+`multipart/form-data` POST, where each trading partner supplies the other
+with their PGP public key. This project (`naesb-edi`) replaces/supplements
+the AS2 gateway with a purpose-built Internet ET gateway. No UI -- purely an
+HTTP/API service, intended to sit between internal systems and external
+NAESB trading partners (interstate pipeline operators).
 
-**Spec provenance note:** the official NAESB WGQ Internet ET v4.0 manual is copyright/DRM-gated and not publicly fetchable — confirmed by reading the FERC filing summary PDF (describes *what changed* in v4.0, no wire-format detail) and public secondary sources (ERCOT/TIBCO), which only cover the older, wrong-quadrant (retail electric) v1.6 multipart baseline you've rejected. You provided `naesb4.md`, a technical implementation guide with concrete wire-format detail (headers, crypto pipeline, response format, error codes, X12 transaction sets) that this plan now builds to directly. That document itself still cuts off mid-sentence in its final section (Technical Exchange Worksheet/network topology) — everything before that point is complete and is what this plan uses. As before, the exact header names remain in one small config-driven mapping (not hardcoded) so they can still be corrected in minutes against your actual Trading Partner Agreements if any partner deviates.
+**Spec provenance note (revised):** an earlier version of this plan was
+built against `docs/naesb4.md`, a document that turned out to be
+**fabricated** -- it invented a wire format (raw `application/octet-stream`
+body, custom lowercase HTTP headers), a receipt format (line-delimited
+`receipt-status: ...` text), and a numeric `101/102/103` error-code scheme,
+none of which exist in the real standard. The user subsequently supplied
+the official **NAESB WGQ Cybersecurity Related Standards Manual, Version
+4.0** (Sept 29, 2023; `docs/NAESB-cyber0923-2026-0709.pdf`), and this plan
+was rewritten against that real text. `docs/naesb4.md` is quarantined (see
+the warning banner at its top) and kept only for historical reference. Two
+things the real manual leaves genuinely open, confirmed with the project
+owner rather than guessed: the exact `version` protocol-version default
+(no safe default -- required config, per-TPA) and the `transaction-set`
+8-character code table (treated as an opaque, length-validated string).
 
 ## Architecture Overview
 
-Python 3.12, FastAPI (inbound HTTP server) + httpx (outbound client), Pydantic v2 for all config/schema validation, `python-gnupg` wrapping system GnuPG for OpenPGP. Config follows OpenAS2's split (central config + partner directory), reimagined as YAML:
+Python 3.12, FastAPI (inbound HTTP server) + httpx (outbound client,
+single-attempt), a separate worker process for outbound retry scheduling,
+Pydantic v2 for all config/schema validation, `python-gnupg` wrapping
+system GnuPG for OpenPGP. Config follows OpenAS2's split (central config +
+partner directory), reimagined as YAML:
 
-- `config/config.yaml` — our identity, server/crypto/db/sink defaults, retry policy, logging (equivalent of OpenAS2's `config.xml`).
-- `config/partners.yaml` — one entry per trading partner: name, DUNS number, endpoint URL, PGP public key reference, inbound/outbound auth credentials, per-partner envelope overrides (equivalent of `partnerships.xml`).
+- `config/config.yaml` -- our identity, envelope defaults, server/crypto/db/
+  sink defaults, outbound retry schedule, logging (equivalent of OpenAS2's
+  `config.xml`).
+- `config/partners.yaml` -- one entry per trading partner: name, DUNS
+  number, endpoint URL, PGP public key reference, inbound/outbound auth
+  credentials, per-partner envelope overrides (protocol version, agreed
+  transaction sets, refnum usage) (equivalent of `partnerships.xml`).
 
 ### Directory tree
 
@@ -20,7 +50,7 @@ naesb-edi/
 ├── pyproject.toml
 ├── README.md
 ├── Dockerfile
-├── docker-compose.yml            # app + postgres + minio, for local dev/manual verification only
+├── docker-compose.yml            # app + worker + postgres + minio, for local dev/manual verification
 ├── .dockerignore
 ├── .gitignore                    # excludes config/keys, .env, real config.yaml/partners.yaml
 ├── config/
@@ -28,21 +58,27 @@ naesb-edi/
 │   └── partners.example.yaml
 ├── db/
 │   └── migrations/
-│       └── 0001_init.sql         # messages + schema_migrations tables
+│       ├── 0001_init.sql          # messages + schema_migrations tables
+│       ├── 0002_naesb_receipt_fields.sql  # trans_id/refnum/refnum_orig, error_code -> text
+│       └── 0003_outbound_jobs.sql # DB-backed outbound retry job queue
 ├── app/
-│   ├── main.py                   # FastAPI app factory + lifespan startup (config, gpg, db, sinks)
-│   ├── dependencies.py           # FastAPI Depends() providers
-│   ├── settings.py               # Pydantic models + loader for config.yaml (env-var secret resolution)
+│   ├── main.py                    # FastAPI app factory + lifespan startup (config, gpg, db, sinks)
+│   ├── worker.py                  # separate process: polls outbound_jobs, executes/reschedules attempts
+│   ├── dependencies.py            # FastAPI Depends() providers
+│   ├── settings.py                # Pydantic models + loader for config.yaml (env-var secret resolution)
 │   ├── partners.py                # Pydantic models + loader for partners.yaml, override-merge logic
 │   ├── logging_config.py          # structlog JSON logging, request-scoped context (partner, digest)
 │   ├── errors.py                  # exception types + FastAPI exception handlers
+│   ├── message.py                 # InboundMessage dataclass passed to sinks
 │   ├── envelope/
-│   │   ├── fields.py               # CanonicalField enum, EnvelopeFields pydantic model
-│   │   ├── mapping.py              # HeaderMapping model + merge(default, partner_override)
-│   │   ├── codec.py                # build_headers()/parse_headers(), EnvelopeError
-│   │   └── receipt.py              # Receipt model, line-delimited encode/decode, ReasonCode enum
+│   │   ├── fields.py               # EnvelopeField enum (literal spec field names), EnvelopeFields model
+│   │   ├── mime_split.py           # manual byte-level MIME multipart splitter (no re-serialization)
+│   │   ├── pgp_mime.py              # multipart/encrypted wrap/unwrap for input-data's inner payload
+│   │   ├── multipart_codec.py      # build_multipart_body() / parse_multipart_form(), EnvelopeError
+│   │   ├── receipt.py              # NaesbReceipt model, multipart/report + multipart/signed build/parse
+│   │   └── error_codes.py          # NaesbErrorCode (real EEDM###/WEDM###), GatewayExtensionCode (GWX-...)
 │   ├── crypto/
-│   │   ├── gpg_wrapper.py          # encrypt_and_sign(), decrypt_and_verify(), sign_message(), verify_message()
+│   │   ├── gpg_wrapper.py          # encrypt_and_sign(), decrypt_and_verify(), detached_sign(), verify_detached()
 │   │   ├── policy.py               # AlgorithmInfo, parse_status(), enforce_policy(), key-length checks
 │   │   └── keyring.py              # startup import of our private key + all partner public keys, RSA length validation
 │   ├── sinks/
@@ -52,27 +88,33 @@ naesb-edi/
 │   │   ├── webhook_sink.py          # httpx POST, best-effort/non-durable
 │   │   └── dispatcher.py            # fan_out(): concurrent, isolated failures
 │   ├── tracking/
-│   │   ├── models.py                 # MessageRecord
+│   │   ├── models.py                 # MessageRecord, OutboundJob
 │   │   ├── db.py                     # psycopg pool + migration runner
-│   │   └── repository.py              # create/update message rows, dedupe-by-digest check
+│   │   └── repository.py              # MessageTracker (messages table), OutboundJobRepository (outbound_jobs)
 │   ├── inbound/
 │   │   ├── routes.py                  # POST /inbound — full receive pipeline
-│   │   └── auth.py                     # per-partner inbound auth (api key / basic) before GPG work
+│   │   └── auth.py                     # per-partner inbound auth (Basic -- the spec's own scheme; api_key extension)
 │   ├── outbound/
-│   │   └── client.py                   # send_message(): envelope, compress+sign+encrypt, POST, verify receipt, tenacity retry
+│   │   └── client.py                   # send_once(): single delivery attempt, envelope build, verify receipt
 │   └── api/
-│       ├── send.py                     # POST /outbound/send — internal trigger for an outbound transmission
+│       ├── send.py                     # POST /outbound/send (enqueue, 202) + GET /outbound/jobs/{id}
+│       ├── partners.py                  # GET /api/partners
 │       └── health.py                   # GET /healthz, /readyz
 └── tests/
-    ├── conftest.py                     # ephemeral GPG keypairs (tmp GNUPGHOME), test config/partners, TestClient
-    ├── test_gpg_policy.py              # roundtrip + weak-algorithm/short-key rejection
-    ├── test_envelope_codec.py
-    ├── test_receipt.py                 # line-delimited encode/decode + signed-message roundtrip
-    ├── test_inbound_route.py           # auth failure / bad sig / weak algo / duplicate / happy path
-    ├── test_outbound_client.py         # respx-mocked partner endpoint, receipt verification
+    ├── conftest.py                     # ephemeral GPG keypairs (tmp GNUPGHOME), gpg_service fixture
+    ├── test_gpg_policy.py              # roundtrip + detached sign/verify + weak-algorithm/short-key rejection
+    ├── test_pgp_mime.py                # multipart/encrypted wrap/unwrap round trip
+    ├── test_multipart_codec.py         # outer multipart/form-data build -> Starlette parse round trip
+    ├── test_receipt.py                 # multipart/report + multipart/signed build/parse, full real-GPG round trip
+    ├── test_inbound_route.py           # auth failure / bad sig / weak algo / duplicate / refnum / happy path
+    ├── test_outbound_client.py         # respx-mocked partner endpoint, single-attempt send_once()
+    ├── test_worker.py                  # retry-scheduling / Exchange Failure declaration logic
     ├── test_sinks_filesystem.py
     ├── test_sinks_s3.py                # moto, in-process, no Docker
+    ├── test_sinks_webhook.py
+    ├── test_sinks_dispatcher.py
     ├── test_tracking_repository.py     # testcontainers[postgres], marked @pytest.mark.integration
+    ├── test_api_partners.py
     └── test_config_loader.py
 ```
 
@@ -80,181 +122,282 @@ naesb-edi/
 
 | Area | Decision | Why |
 |---|---|---|
-| Request transport | `POST`, `Content-Type: application/octet-stream`, raw (armor-less) binary OpenPGP blob as body. Metadata carried in separate, **strictly lowercase** literal HTTP headers: `version`, `from-id`, `to-id`, `input-format`, `transaction-set`. | Matches `naesb4.md` §3 exactly. Header *names* still live in one config-driven mapping (not hardcoded) so a partner-specific TPA deviation is a config change. |
-| Payload crypto pipeline | Compress (ZIP/ZLIB) → sign with sender's private key (SHA-256) → encrypt to recipient's public key (AES-256) → armor-less binary, in that order, via a single `python-gnupg` `encrypt()` call with `sign=` set and explicit `extra_args`. | Matches `naesb4.md` §2's mandated sequence. |
-| Key strength | RSA only; reject/refuse to load any key (ours or a partner's) under 2048 bits at startup; default key-generation guidance is 4096-bit. | Matches `naesb4.md` §2. Enforced in `keyring.py` via `gpg.list_keys()`'s `length`/`algo` fields, not just documented. |
-| TLS | Outbound `httpx` client pinned to TLS 1.2 minimum; inbound TLS termination stays at a reverse proxy (documented requirement: proxy must reject TLS < 1.2). | Matches `naesb4.md` §3. The app itself doesn't terminate TLS (consistent with "keep it simple" — that's infra's job either way). |
-| Response/receipt format | The HTTP 200 response body is **line-delimited `key: value` text** (`receipt-status`, `receipt-timestamp`, `error-code`, `error-description`), and that whole body **is itself an OpenPGP-signed message** (`gpg --sign`, not `--clearsign`, to avoid ASCII clearsign's dash-escaping/line-ending fragility) using our private key. No JSON, no separate signature header. | Matches `naesb4.md` §4 directly — this supersedes my earlier draft's JSON+detached-signature-header design. |
-| Error codes | Adopt `naesb4.md`'s documented codes (101 decryption failed, 102 signature verification failed, 103 invalid header parameters) as the base `error-code` enum; extend upward (104 unknown partner, 105 duplicate message, 106 weak algorithm/short key, 107 sink failure, 108 invalid transaction-set) since the doc's list is explicitly "e.g." and not exhaustive. Document the extension range as gateway-specific, not officially NAESB-assigned. | The doc gives 3 example codes for a protocol that clearly needs more failure modes than that; we need codes for our own extra guarantees (dedup, sinks, key policy) without colliding with the documented ones. |
-| Dedup / idempotency key | **No message-id header exists in this transport spec** — dedupe inbound transmissions on a SHA-256 digest of the raw encrypted request body per `(partner, digest)`, not an invented message-id. | `naesb4.md`'s mandated header set has no message/transaction identifier at all (X12 interchange control numbers, if needed, live *inside* the encrypted payload, which this gateway treats as an opaque blob). Content-digest dedup is protocol-agnostic and doesn't require inventing a field the spec doesn't define. |
-| Transaction-set metadata | `transaction-set` header (3-digit X12 code) is passed through as opaque metadata the internal caller supplies on outbound send and that we record/log on inbound — not interpreted. Known WGQ-relevant codes documented for reference: 873 (Nomination), 861 (Scheduled Quantity), 811 (Consolidated Invoice), 824 (Application Advice). | Matches `naesb4.md` §5. Gateway stays transport-only; X12 content interpretation is a downstream concern. |
-| Sinks | Filesystem, S3-compatible, webhook — independently configurable, each tagged `durable: bool` (fs/S3 default true, webhook default false). ACK requires ≥1 durable sink success (configurable), never depends on webhook success. | Prevents ACKing content we didn't actually retain anywhere, and prevents a flaky webhook from causing spurious rejections against a partner who delivered valid data. |
-| Message tracking | Postgres, modeled as a cross-cutting concern updated at each pipeline checkpoint, *not* a fourth "sink." | It's an audit trail over the whole lifecycle (including auth/crypto/dedupe failures that never reach the sink stage), not "deliver a copy of the file." |
-| Inbound auth | Per-partner shared API key or Basic auth, checked *before* any GPG decryption work — fails closed with a plain (non-signed) HTTP 401. | Cheap rejection of unauthenticated traffic before spending CPU on GPG; this is a transport-level concern the spec doesn't cover, layered on top. |
-| DB migrations | Numbered idempotent SQL files (`0001_init.sql`, ...) + a small custom runner tracking applied filenames in `schema_migrations`. Not Alembic, not a single `schema.sql`. | A single `schema.sql` can't express a later `ALTER TABLE` idempotently; Alembic's autogeneration/branching is unneeded for 1-2 tables. |
-| Outbound retry | `tenacity`; same encrypted payload/digest reused across retry attempts so partner-side dedup (if any) still works. | Small, well-tested dependency; matches "keep it simple." |
-| Message size | `server.max_body_size_bytes` cap enforced before buffering into memory. | Basic DoS protection on an internet-facing endpoint that must fully buffer the body to run GPG. |
-| PGP library | `python-gnupg` wrapping system GnuPG — needs `gnupg` apt-installed in the Dockerfile. | Your choice; maximum interop compatibility with whatever PGP tool partners run. |
-| Static egress IP / TEW | Not code — documented as an operational prerequisite in the README (interstate pipelines require a fixed, whitelisted outbound IP and a bilateral Technical Exchange Worksheet before certification testing). Optional config knob to bind the outbound `httpx` client to a specific local source address if your infra needs it. | Matches `naesb4.md` §6. This is infrastructure/onboarding process, not something the app can solve internally. |
+| Request transport | `POST`, `Content-Type: multipart/form-data`, ordered fields `from`/`to`/`version`/`receipt-disposition-to`/`receipt-report-type`/`input-format`/`input-data`/`receipt-security-selection`/(optional)`transaction-set`/`refnum`/`refnum-orig`. Outer envelope is hand-built byte-for-byte (`multipart_codec.py`) for exact field order; inbound parsing trusts Starlette's `request.form()` (`python-multipart`) for the untrusted outer envelope. | Matches the real Envelope Data Dictionary and "Sender HTTP Request Data Elements" exactly. |
+| Payload nesting | The `input-data` field's content is itself `multipart/encrypted` (RFC 1847/3156): an `application/pgp-encrypted` control part ("Version: 1") + the raw armor-less OpenPGP message. Hand-rolled build/parse (`pgp_mime.py`), not a generic MIME library, for byte-exact control. | Matches "Anatomy of an Internet ET Package" / "Payload" exactly. |
+| MIME byte-exactness | All MIME construction (outer envelope, inner `multipart/encrypted`, the receipt's `multipart/signed`/`multipart/report`) is hand-rolled with explicit boundary strings and a manual splitter (`mime_split.py`) rather than Python's `email.generator`, which is not guaranteed to reproduce byte-identical output on re-serialization -- and PGP signatures are byte-exact. | Verified in `test_receipt.py::test_full_signed_receipt_round_trip_with_real_gpg`: sign, wrap, parse, and verify against real GnuPG without ever re-serializing the signed bytes. |
+| Payload crypto pipeline | Compress (ZIP/ZLIB) -> sign with sender's private key -> encrypt to recipient's public key -> armor-less binary, via a single `python-gnupg` `encrypt()` call with `sign=` set. | Matches "Encryption / Digital Signature". Cipher/digest choice (AES256/SHA256 default) is this gateway's own local policy, not a NAESB mandate (12.3.26). |
+| Key strength | RSA only; reject/refuse to load any key (ours or a partner's) under 2048 bits at startup; 4096-bit recommended. | A real NAESB requirement (Appendix A), enforced in `keyring.py` via `gpg.list_keys()`. |
+| TLS | Outbound `httpx` client pinned to TLS 1.2 minimum; inbound TLS termination stays at a reverse proxy. | Matches standards 12.3.14/12.3.23/Appendix A. |
+| Receipt | `Content-Type: multipart/signed` (detached PGP signature, `application/pgp-signature`) wrapping `multipart/report; report-type="gisb-acknowledgement-receipt"`, whose sub-parts contain `key=value*`-delimited lines (`time-c`, `request-status`, `server-id`, `trans-id`) in that required order. `time-c` is `yyyymmddhhmmss`, captured immediately on last byte received (standard 12.3.5), before auth/parsing/decryption. `trans-id` is a DB-sequence-backed monotonic integer. | Matches "Receiving Internet ET Packages" / "Acknowledgement Receipt" exactly -- supersedes the earlier fabricated line-delimited JSON-like design. |
+| Error codes | Real `EEDM###`/`WEDM###` codes (`error_codes.py::NaesbErrorCode`) for spec-documented failure modes (missing/invalid fields, decryption failures 601-604/699, unknown partner 701, duplicate refnum 121, ...). Gateway-only extensions (`GatewayExtensionCode`, `GWX-...` prefix) for guarantees the spec doesn't cover (content-digest dedup, local weak-algorithm policy, sink delivery failure) -- explicitly namespaced so they can never collide with a real code. | The spec's own Table 1 is authoritative and far more specific than the earlier fabricated 3-code scheme; extensions are clearly marked as non-NAESB. |
+| Authentication | HTTP Basic Authentication over TLS is the spec-compliant default (`type: basic`, standards 12.3.14/12.3.28/12.3.29). `type: api_key` (Bearer) is a clearly-labeled gateway-only convenience extension. | Matches the standard directly, rather than treating both as equally-spec-defined (neither was, previously). |
+| Dedup / idempotency key | Primarily `(partner, refnum)` when a partner is configured `use_refnum: true` (the spec's own tracking mechanism, standards around `refnum`/`refnum-orig`); otherwise a SHA-256 digest of the extracted ciphertext bytes (not the raw multipart body, whose boundary/whitespace can differ between byte-identical resends). | Prefers the spec's real tracking mechanism where a partner supports it; content-digest is a documented gateway extension, not a spec concept, for partners who don't use refnum. |
+| Transaction-set metadata | `transaction-set` is an opaque, length-8-validated string (per the data dictionary's "8 character code" description) -- not derived from a 3-digit ANSI X12 transaction set number. The real WGQ 8-character code table wasn't available; treat as caller/TPA-supplied. | Avoids inventing a code-derivation formula the spec doesn't define. |
+| `version` field | Required config field (`envelope.default_version`, per-partner overridable), no default value. | The manual's own "4.0" is the *document* revision, not necessarily the wire `version` field (historically small decimals like "1.9"); guessing a value and shipping it to a real partner is worse than forcing an explicit operator decision. |
+| Scope: input-format | `InputFormat` enum is `X12` only (confirmed with project owner). The spec's `FF` value belongs to a separate "Internet Flat File EDM" / Interactive-Browser HTML-upload mechanism (Appendix B/C) that's out of scope for this pure HTTP/API gateway; `error` is only meaningful for the Error Notification flow (also out of scope, see below). Both are trivial to add back as enum values later. | Keeps this gateway a single, pure "Batch Browser" (automated) implementation rather than also building a human-facing web upload flow. |
+| Scope: Error Notification | Not implemented. This gateway decrypts synchronously before sending the receipt (a fully spec-compliant choice per "Parties may choose to decrypt file before or after Receipt is sent") so decryption errors are always reported directly in that same receipt, never via a later async POST-back. | Confirmed with project owner: avoids building a second inbound-notification surface for a scenario this gateway's architecture doesn't produce. |
+| Outbound retry / Exchange Failure | DB-backed job queue: `POST /outbound/send` enqueues a row in `outbound_jobs` and returns `202` immediately (never blocks). A separate `app/worker.py` process polls for due jobs (`SELECT ... FOR UPDATE SKIP LOCKED`), executes `outbound/client.py::send_once()`, and reschedules per `outbound.retry_schedule_seconds` (default `[0, 900, 2700]` -- T+0/+15min/+45min) or marks `exchange_failure` once exhausted. | Standards 12.3.10/12.3.11 require 3 attempts over a 30-120 minute window -- far too long to hold open an HTTP request; a DB-backed queue also survives an app/worker restart mid-window, per project owner's explicit choice over a simpler-but-blocking design. |
+| Sinks | Filesystem, S3-compatible, webhook -- independently configurable, each tagged `durable: bool` (fs/S3 default true, webhook default false). ACK requires >=1 durable sink success (configurable), never depends on webhook success. | Unchanged from the original design -- prevents ACKing content we didn't actually retain anywhere. |
+| Message tracking | Postgres, `messages` table for inbound/outbound message lifecycle, separate `outbound_jobs` table for retry-schedule state (attempt count, next attempt time, last error). | Retry scheduling has different query/locking needs (claim-and-lock semantics) than the audit-trail `messages` table, so it's a separate table rather than overloading one schema. |
+| DB migrations | Numbered idempotent SQL files (`0001_init.sql`, `0002_naesb_receipt_fields.sql`, `0003_outbound_jobs.sql`) + a small custom runner tracking applied filenames in `schema_migrations`. | Unchanged -- still simpler than Alembic for a handful of tables. |
+| PGP library | `python-gnupg` wrapping system GnuPG -- needs `gnupg` apt-installed in the Dockerfile. | Unchanged -- maximum interop compatibility with whatever PGP tool partners run. |
+| Allowed TCP ports / static egress IP / TPW | Not code -- documented as operational prerequisites in the README (NAESB Appendix C's specific allowed-port list; interstate pipelines' fixed whitelisted outbound IP requirement; a bilateral Technical/Trading Partner Worksheet before certification testing). | Infrastructure/onboarding process, not something the app enforces internally. |
 
 ## Config schema (illustrative)
 
-`config/config.example.yaml`:
-```yaml
-identity:
-  name: "MyCompany"
-  duns: "123456789"
-server:
-  host: 0.0.0.0
-  port: 8000
-  inbound_path: /inbound
-  max_body_size_bytes: 26214400
-  outbound_source_address: null   # optional: bind egress to a specific static IP
-crypto:
-  private_key_path: /data/gnupg/private_key.asc
-  passphrase_env: NAESB_GPG_PASSPHRASE
-  min_rsa_key_bits: 2048
-  recommended_rsa_key_bits: 4096
-  cipher_algo: AES256
-  digest_algo: SHA256
-  compress_algo: ZIP
-  tls_min_version: "1.2"
-envelope:
-  header_mapping:
-    version: version
-    from_id: from-id
-    to_id: to-id
-    input_format: input-format
-    transaction_set: transaction-set
-  default_version: "4.0"
-sinks:
-  require_at_least_one_durable_success: true
-  filesystem:
-    enabled: true
-    durable: true
-    base_dir: /data/inbound
-  s3:
-    enabled: false
-    durable: true
-    endpoint_url: null          # set for MinIO/Wasabi; omit for AWS
-    bucket: naesb-inbound
-    access_key_env: NAESB_S3_ACCESS_KEY
-    secret_key_env: NAESB_S3_SECRET_KEY
-  webhook:
-    enabled: false
-    durable: false
-    url: null
-database:
-  url_env: NAESB_DATABASE_URL
-outbound:
-  timeout_seconds: 30
-  retry_max_attempts: 3
-  retry_backoff_seconds: 5
-logging:
-  level: INFO
-  format: json
-partners_file: /app/config/partners.yaml
-```
-
-`config/partners.example.yaml`:
-```yaml
-partners:
-  - name: acme-pipeline
-    duns: "987654321"
-    endpoint_url: "https://secure-transport.acme-pipeline.example.com/edi/receiver-endpoint"
-    pgp_public_key_path: /data/gnupg/partners/acme-pipeline.pub.asc
-    outbound_auth:
-      type: basic
-      username: myuid
-      password_env: NAESB_ACME_PASSWORD
-    inbound_auth:
-      type: api_key
-      key_env: NAESB_ACME_INBOUND_KEY
-    envelope_overrides:
-      header_mapping:
-        transaction_set: x-transaction-set   # example of a partner-specific TPA deviation
-```
+See `config/config.example.yaml` and `config/partners.example.yaml` in the
+repo for the full, current, commented schema (envelope `server_id` /
+`default_version` / `receipt_security_selection`, outbound
+`retry_schedule_seconds` / `worker_poll_interval_seconds`, per-partner
+`envelope_overrides.version` / `agreed_transaction_sets` / `use_refnum`).
+Those files are the source of truth; this document doesn't duplicate them
+to avoid drift.
 
 ## Request/response wire format
 
-**Outbound request** (built by `app/outbound/client.py`, parsed on the receiving end by `app/inbound/routes.py`):
+**Outbound request** (built by `app/envelope/multipart_codec.py::build_multipart_body()`,
+used by `app/outbound/client.py::send_once()`, parsed on the receiving end
+by `app/envelope/multipart_codec.py::parse_multipart_form()` in
+`app/inbound/routes.py`):
 ```
 POST {endpoint_url} HTTP/1.1
-Content-Type: application/octet-stream
-version: 4.0
-from-id: 123456789
-to-id: 987654321
-input-format: X12
-transaction-set: 873
+Content-Type: multipart/form-data; boundary="----naesb-form-<random>"
 
-<raw binary: ZIP-compressed, SHA-256-signed, AES-256-encrypted OpenPGP blob, no armor>
+------naesb-form-<random>
+content-disposition: form-data; name="from"
+
+123456789
+------naesb-form-<random>
+content-disposition: form-data; name="to"
+
+987654321
+------naesb-form-<random>
+content-disposition: form-data; name="version"
+
+1.9
+------naesb-form-<random>
+content-disposition: form-data; name="receipt-disposition-to"
+
+123456789
+------naesb-form-<random>
+content-disposition: form-data; name="receipt-report-type"
+
+gisb-acknowledgement-receipt
+------naesb-form-<random>
+content-disposition: form-data; name="input-format"
+
+X12
+------naesb-form-<random>
+content-disposition: form-data; name="input-data"; filename="payload.pgp"
+content-type: multipart/encrypted; boundary="----naesb-pgp-<random>"; protocol="application/pgp-encrypted"
+
+------naesb-pgp-<random>
+content-type: application/pgp-encrypted
+
+Version: 1
+------naesb-pgp-<random>
+content-type: application/octet-stream
+content-transfer-encoding: binary
+
+<raw binary: ZIP-compressed, signed, encrypted OpenPGP message, no armor>
+------naesb-pgp-<random>--
+------naesb-form-<random>
+content-disposition: form-data; name="receipt-security-selection"
+
+signed-receipt-protocol=required,pgp-signature;signed-receipt-micalg=required,sha256
+------naesb-form-<random>
+content-disposition: form-data; name="transaction-set"
+
+NOM00001
+------naesb-form-<random>--
 ```
 
-**Synchronous response** — HTTP 200 body is a single OpenPGP-signed message (via `app/crypto/gpg_wrapper.sign_message()`, using `gpg --sign` not `--clearsign`) whose inner plaintext is line-delimited key/value text:
+**Synchronous response** -- HTTP 200 body is `multipart/signed` (RFC 1847),
+built/parsed by `app/envelope/receipt.py`:
 ```
-receipt-status: success
-receipt-timestamp: 2026-07-08T19:30:00Z
-error-code:
-error-description:
-```
-or, on rejection:
-```
-receipt-status: validation-failed
-receipt-timestamp: 2026-07-08T19:30:05Z
-error-code: 102
-error-description: Signature Verification Failed
-```
+Content-Type: multipart/signed; micalg="pgp-sha256"; protocol="application/pgp-signature"; boundary="----naesb-signed-<random>"
 
-## Signed synchronous receipt flow
+------naesb-signed-<random>
+content-type: multipart/report; report-type="gisb-acknowledgement-receipt"; boundary="----naesb-report-<random>"
 
-Inbound pipeline (`app/inbound/routes.py`) — every path past transport-level auth returns **HTTP 200** with a signed line-delimited receipt body; `receipt-status`/`error-code` is the actual protocol-level ACK/NACK:
-1. Enforce `max_body_size_bytes`; per-partner inbound auth check — fail closed with a plain (unsigned) HTTP 401, no GPG work done.
-2. `parse_headers()` → `EnvelopeFields` (`version`, `from-id`, `to-id`, `input-format`, `transaction-set`); malformed/missing → `error-code: 103`.
-3. Look up partner by `from-id`; unknown → `error-code: 104`.
-4. Compute SHA-256 digest of the raw request body; dedupe check (`partner`, `digest`, `inbound`) in Postgres; duplicate → `error-code: 105`, skip reprocessing.
-5. `decrypt_and_verify()` — decryption failure → `error-code: 101`; signature verification failure → `error-code: 102`.
-6. `enforce_policy()` on parsed algorithm info + partner key length; violation → `error-code: 106`.
-7. Sink fan-out; if zero durable sinks succeed → `error-code: 107`.
-8. Track every step in Postgres (keyed on the content digest).
-9. Build the line-delimited receipt text, `sign_message()` it with our private key, return as the HTTP 200 body.
+------naesb-report-<random>
+content-type: text/html
 
-Outbound client (`app/outbound/client.py`) mirrors this: builds headers, `compress→sign→encrypt`, POSTs, captures the raw response body, `verify_message()` against the partner's public key *before* trusting `receipt-status`. Unverifiable/missing signature → treated as no receipt received (retried per `tenacity` policy). Verified `validation-failed` → marked failed; only retried automatically for codes that suggest a transient/our-side issue (e.g. none currently — 101-108 are all deterministic failures), otherwise surfaced for manual attention.
+<HTML>...time-c=20260710120000*request-status=ok*server-id=gateway.example.com*trans-id=42*...</HTML>
+------naesb-report-<random>
+content-type: text/plain
+
+time-c=20260710120000*
+request-status=ok*
+server-id=gateway.example.com*
+trans-id=42*
+------naesb-report-<random>--
+------naesb-signed-<random>
+content-type: application/pgp-signature
+
+-----BEGIN PGP SIGNATURE-----
+...
+-----END PGP SIGNATURE-----
+------naesb-signed-<random>--
+```
+On rejection, `request-status` is instead e.g. `EEDM604: Encrypted file not
+signed or signature not matched*` or a `GWX-...` extension code.
+
+## Inbound/outbound pipeline flow
+
+Inbound (`app/inbound/routes.py`), every path past transport-level auth
+returns **HTTP 200** with a signed `multipart/signed` receipt body;
+`request-status` is the actual protocol-level ACK/NACK:
+1. Read body; capture `time_c` immediately (standard 12.3.5) -- before size
+   check, auth, or parsing.
+2. Enforce `max_body_size_bytes` -- fail with plain HTTP 413.
+3. Per-partner inbound auth (Basic, or gateway-extension Bearer) -- fail
+   closed with a plain (unsigned) HTTP 401, no GPG/parsing work done.
+4. Assign a sequential `trans_id` (DB sequence) -- used in every receipt
+   from this point on, success or failure.
+5. Parse the `multipart/form-data` envelope + unwrap `input-data`'s
+   `multipart/encrypted` payload; malformed/missing fields map to the exact
+   `EEDM1xx` code via `error_codes.py::error_code_for_field()`.
+6. Verify the envelope's `from` matches the authenticated partner's DUNS
+   (else `EEDM701`); check refnum presence if the partner requires it
+   (`EEDM119`).
+7. Dedupe: `(partner, refnum)` if in use, else content-digest of the
+   extracted ciphertext (`GWX-DUPLICATE-DIGEST`; `EEDM121` for refnum
+   reuse).
+8. `decrypt_and_verify()` -- decryption failure -> `EEDM699`; signature
+   mismatch -> `EEDM604`.
+9. `enforce_policy()` on parsed algorithm info + partner key length;
+   violation -> `GWX-WEAK-ALGO`.
+10. Sink fan-out; zero durable sinks succeed -> `GWX-SINK-FAILURE`.
+11. Track every step in Postgres. Build the receipt, `detached_sign()` it,
+    wrap in `multipart/signed`, return as the HTTP 200 body.
+
+Outbound (`app/outbound/client.py::send_once()` + `app/worker.py`):
+`POST /outbound/send` encrypts the payload once, enqueues an `outbound_jobs`
+row, returns `202`. The worker claims due jobs, calls `send_once()` (builds
+the multipart body, POSTs, parses the `multipart/signed` response,
+`verify_detached()`s it against the partner's public key *before* trusting
+`request-status* -- never re-serializes the signed bytes before verifying),
+and either marks the job `delivered`/`failed_nack` or reschedules per
+`outbound.retry_schedule_seconds`, marking `exchange_failure` once that
+schedule is exhausted.
 
 ## Modern-OpenPGP and key-strength enforcement
 
-On encrypt: `gpg.encrypt(data, recipients=[partner_key], sign=our_key, extra_args=["--compress-algo","ZIP","--cipher-algo","AES256","--digest-algo","SHA256","--s2k-digest-algo","SHA256","--personal-cipher-preferences","AES256","--personal-digest-preferences","SHA256"])`, plus harden the managed `GNUPGHOME`'s `gpg.conf` (`disable-cipher-algo 3DES/CAST5/IDEA`, `weak-digest SHA1`, `cert-digest-algo SHA256`) as a second line of defense.
+On encrypt: `gpg.encrypt(data, recipients=[partner_key], sign=our_key,
+extra_args=["--compress-algo","ZIP","--cipher-algo","AES256","--digest-algo","SHA256", ...])`,
+armor-less. On sign (receipt): `gpg.sign(data, detach=True, clearsign=False,
+binary=False)` -- an ASCII-armored **detached** signature (`app/crypto/gpg_wrapper.py::detached_sign()`),
+matching the receipt's `application/pgp-signature` body part. Verification
+uses `gpg.verify_data()` (`verify_detached()`), since python-gnupg needs the
+detached signature on disk.
 
-On decrypt: `python-gnupg` doesn't expose the negotiated algorithm as a named attribute — parse it from GnuPG's status-fd lines in `result.stderr`: `DECRYPTION_INFO <mdc_method> <sym_algo>` for the cipher, `VALIDSIG ... <pubkey_algo> <hash_algo> ...` for the signature digest. `test_gpg_policy.py` must assert this against a real ephemeral-keypair roundtrip (not a hardcoded string) so GnuPG version drift fails loudly in CI rather than silently accepting weak crypto.
+On decrypt/verify: `python-gnupg` doesn't expose the negotiated algorithm as
+a named attribute -- parse it from GnuPG's status-fd lines in
+`result.stderr`: `DECRYPTION_INFO <mdc_method> <sym_algo>` for the cipher,
+`VALIDSIG ... <pubkey_algo> <hash_algo> ...` for the signature digest.
+`test_gpg_policy.py` asserts this against a real ephemeral-keypair roundtrip
+(not a hardcoded string) so GnuPG version drift fails loudly rather than
+silently accepting weak crypto.
 
-On startup (`keyring.py`): import our private key and every partner's public key into the managed keyring, then call `gpg.list_keys()` and reject startup if our key or any partner key reports `algo` outside RSA or `length` < `crypto.min_rsa_key_bits` (default 2048), logging a warning if below `recommended_rsa_key_bits` (4096).
+On startup (`keyring.py`): import our private key and every partner's
+public key into the managed keyring, then call `gpg.list_keys()` and reject
+startup if our key or any partner key reports `algo` outside RSA or
+`length` < `crypto.min_rsa_key_bits` (default 2048; a real NAESB
+requirement, Appendix A), logging a warning if below
+`recommended_rsa_key_bits` (4096).
 
 ## Database
 
-`db/migrations/0001_init.sql` creates `schema_migrations` (tracks applied filenames) and `messages`: `id`, `direction`, `partner_name`, `content_digest`, `transaction_set`, `input_format`, `status`, `error_code`, `receipt_verified`, `sinks_status jsonb`, `raw_headers jsonb`, timestamps, `UNIQUE(partner_name, content_digest, direction)`. `app/tracking/db.py` applies un-applied migration files in filename order at startup.
+`db/migrations/0001_init.sql` creates `schema_migrations` and `messages`.
+`0002_naesb_receipt_fields.sql` adds `trans_id`/`refnum`/`refnum_orig` and
+converts `error_code` from `integer` to `text` (to hold `EEDM###`/`GWX-...`
+strings) plus a `trans_id_seq` sequence. `0003_outbound_jobs.sql` adds the
+`outbound_jobs` table (envelope fields, ciphertext, status, attempt count,
+`next_attempt_at`, last error, receipt details) with an index for the
+worker's due-job claim query. `app/tracking/db.py` applies un-applied
+migration files in filename order at startup (both app and worker).
 
 ## Testing strategy
 
-- `test_gpg_policy.py`: compress→sign→encrypt/decrypt→verify roundtrip using ephemeral keypairs generated per-test into a `tmp_path` `GNUPGHOME`; explicit weak-cipher, weak-digest, and short-RSA-key rejection cases.
-- `test_envelope_codec.py`: header build/parse against the literal lowercase names, including a partner override case.
-- `test_receipt.py`: line-delimited encode/decode round trip, plus the signed-message wrap/verify.
-- `test_inbound_route.py`: FastAPI `TestClient` — auth failure (401, unsigned), bad signature (102), decryption failure (101), unknown partner (104), duplicate digest (105), weak algorithm (106), sink failure (107), happy path (success) with all sinks mocked.
-- `test_outbound_client.py`: `respx`-mocked partner endpoint, asserts request header/body shape and receipt-signature verification logic.
-- `test_sinks_filesystem.py`: real temp dir.
-- `test_sinks_s3.py`: `moto` (`@mock_aws`), in-process, no Docker.
-- `test_tracking_repository.py`: `testcontainers[postgres]`, marked `@pytest.mark.integration` so the default fast `pytest` run skips it; run as a separate step when Docker is available.
-- `test_config_loader.py`: valid/invalid config and partner files, env-var secret resolution, override-merge behavior.
+- `test_gpg_policy.py`: compress->sign->encrypt/decrypt->verify roundtrip
+  plus detached-sign/verify, using ephemeral keypairs; explicit
+  weak-cipher/weak-digest/short-RSA-key rejection cases.
+- `test_pgp_mime.py`: `multipart/encrypted` wrap/unwrap round trip.
+- `test_multipart_codec.py`: outer envelope build -> real Starlette/
+  `python-multipart` parse round trip, including the nested
+  `multipart/encrypted` payload; field-order assertion; missing/invalid
+  field error mapping.
+- `test_receipt.py`: `multipart/report`/`multipart/signed` build/parse
+  round trip, including a full real-GnuPG detached-sign + verify pass over
+  the exact bytes the manual MIME splitter extracts (proves no
+  re-serialization mutates signed bytes).
+- `test_inbound_route.py`: FastAPI `TestClient` against real multipart
+  bodies -- auth failure (401, unsigned), signature failure (`EEDM604`),
+  decryption failure (`EEDM699`), sender mismatch (`EEDM701`), duplicate
+  digest/refnum (`GWX-DUPLICATE-DIGEST`/`EEDM121`), missing refnum
+  (`EEDM119`), weak algorithm (`GWX-WEAK-ALGO`), sink failure
+  (`GWX-SINK-FAILURE`), missing field (exact `EEDM1xx`), sequential
+  `trans-id`, happy path.
+- `test_outbound_client.py`: `respx`-mocked partner endpoint, asserts
+  request shape (multipart body, ordered fields, ciphertext-not-plaintext)
+  and receipt-signature verification logic for `send_once()`.
+- `test_worker.py`: retry-scheduling and Exchange Failure declaration logic
+  against fake job/tracker repositories.
+- `test_sinks_*.py`: filesystem (real temp dir), S3 (`moto`, in-process),
+  webhook, dispatcher fan-out.
+- `test_tracking_repository.py`: `testcontainers[postgres]`, marked
+  `@pytest.mark.integration`, covering both `MessageTracker` and
+  `OutboundJobRepository` (including the claim/reschedule/exchange-failure
+  state machine) against a real Postgres instance.
+- `test_config_loader.py`, `test_api_partners.py`: config/partner loading,
+  env-var secret resolution, override-merge behavior, internal-API auth.
 
 ## Docker
 
-Single `Dockerfile`: `python:3.12-slim`, `apt-get install gnupg ca-certificates`, non-root user, `pip install .`, `uvicorn app.main:app`. `docker-compose.yml` adds Postgres and MinIO for local dev/manual verification only — CI tests don't depend on compose being up (moto + testcontainers are self-contained).
+`Dockerfile`: `python:3.12-slim`, `apt-get install gnupg ca-certificates`,
+non-root user, `pip install .`, default `CMD` runs `uvicorn app.main:app`.
+`docker-compose.yml` adds a `worker` service (same image,
+`command: ["python", "-m", "app.worker"]`), Postgres, and MinIO for local
+dev/manual verification -- CI tests don't depend on compose being up (moto
++ testcontainers are self-contained).
 
 ## Verification (end-to-end, manual)
 
-1. `docker-compose up --build`; `GET /healthz` → 200.
-2. Generate two ephemeral RSA-4096 GPG keypairs locally ("gateway" = us, "test-partner"); export public keys; import gateway's private key into the running container's `GNUPGHOME` volume out-of-band (never baked into the image or committed); reference `test-partner`'s public key from `partners.yaml`.
-3. Build a sample X12 873 nomination file; run it through `compress (ZIP) → sign (SHA-256) → encrypt (AES-256)` to the gateway's public key using the test-partner's key, armor-less.
-4. `curl -X POST http://localhost:8000/inbound -H "version: 4.0" -H "from-id: <test-partner DUNS>" -H "to-id: <our DUNS>" -H "input-format: X12" -H "transaction-set: 873" --data-binary @payload.pgp`. Confirm: HTTP 200; body verifies with `gpg --verify` against the gateway's public key; decrypted inner text shows `receipt-status: success`.
-5. Confirm the decrypted file landed in the filesystem sink dir and (if enabled) in MinIO; confirm a webhook listener received the notification (if enabled).
-6. `psql ... -c "select * from messages;"` shows one row with `status=success` and populated `sinks_status`.
-7. Negative paths: resend the identical payload → `error-code: 105`; re-encrypt with `--cipher-algo 3DES` → `error-code: 106`; omit the inbound API key → plain HTTP 401 with no signed body; use a 1024-bit test key → startup rejects it / runtime returns `error-code: 106`.
-8. Automated equivalent of all of the above lives in `tests/test_inbound_route.py` (no Docker needed) plus `tests/test_tracking_repository.py` (Docker/testcontainers, integration-marked). Run `pytest` for the fast suite and `pytest -m integration` for the DB-backed suite.
+1. `docker-compose up --build`; `GET /healthz` -> 200.
+2. Generate two ephemeral RSA-4096 GPG keypairs locally ("gateway" = us,
+   "test-partner"); export public keys; import gateway's private key into
+   the running container's `GNUPGHOME` volume out-of-band; reference
+   `test-partner`'s public key from `partners.yaml`.
+3. Build a sample X12 873 nomination payload; encrypt+sign it to the
+   gateway's key using the test-partner's key (`compress -> sign ->
+   encrypt`, armor-less); wrap it as `multipart/encrypted`
+   (`app/envelope/pgp_mime.py::wrap_pgp_encrypted()`), then assemble the
+   full ordered `multipart/form-data` body
+   (`app/envelope/multipart_codec.py::build_multipart_body()`).
+4. `POST /inbound` with HTTP Basic Auth. Confirm: HTTP 200;
+   `Content-Type: multipart/signed`; the detached signature verifies with
+   `gpg --verify` against the gateway's public key; the decoded
+   `multipart/report` shows `request-status=ok*`, a sequential `trans-id`,
+   and `time-c` in `yyyymmddhhmmss`.
+5. Confirm the decrypted file landed in the filesystem sink dir and (if
+   enabled) in MinIO; confirm a webhook listener received the notification
+   (if enabled).
+6. `psql ... -c "select * from messages;"` shows one row with
+   `status=accepted` and populated `sinks_status`/`trans_id`.
+7. Negative paths: resend the identical payload -> `GWX-DUPLICATE-DIGEST`
+   (or `EEDM121` if the partner uses refnum); re-encrypt with
+   `--cipher-algo 3DES` -> `GWX-WEAK-ALGO`; omit the inbound Basic-Auth
+   header -> plain HTTP 401 with no signed body; use a 1024-bit test key ->
+   startup rejects it.
+8. `POST /outbound/send` -> confirm `202` + job id; confirm an
+   `outbound_jobs` row appears; `GET /outbound/jobs/{id}` shows
+   `queued` -> `delivered` once the worker processes it. Kill/restart the
+   `worker` service mid-retry-window and confirm it resumes from DB state.
+   Force the partner endpoint to fail across the full retry schedule and
+   confirm `exchange_failure` plus the distinct `outbound_exchange_failure`
+   log event.
+9. Automated equivalent of all of the above lives in the `tests/` suite (no
+   Docker needed except `test_tracking_repository.py`, integration-marked).
+   Run `pytest -m "not integration"` for the fast suite and
+   `pytest -m integration` for the DB-backed suite.

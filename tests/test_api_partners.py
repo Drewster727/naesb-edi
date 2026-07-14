@@ -6,8 +6,6 @@ from fastapi.testclient import TestClient
 
 from app.api import partners as partners_api
 from app.dependencies import get_partners, get_settings
-from app.envelope.fields import CanonicalField
-from app.envelope.mapping import HeaderMapping, HeaderOverrides
 from app.partners import (
     ApiKeyAuthConfig,
     BasicAuthConfig,
@@ -24,18 +22,6 @@ from app.settings import (
 )
 
 
-def _header_mapping() -> HeaderMapping:
-    return HeaderMapping(
-        {
-            CanonicalField.VERSION: "version",
-            CanonicalField.FROM_ID: "from-id",
-            CanonicalField.TO_ID: "to-id",
-            CanonicalField.INPUT_FORMAT: "input-format",
-            CanonicalField.TRANSACTION_SET: "transaction-set",
-        }
-    )
-
-
 @pytest.fixture
 def settings(monkeypatch):
     monkeypatch.setenv("TEST_INTERNAL_API_USERNAME", "admin")
@@ -48,7 +34,7 @@ def settings(monkeypatch):
             passphrase_env="TEST_UNUSED_PASSPHRASE",
             gnupg_home="/tmp/unused",
         ),
-        envelope=EnvelopeConfig(header_mapping=_header_mapping()),
+        envelope=EnvelopeConfig(server_id="gateway.example.com", default_version="1.9"),
         internal_api=InternalApiConfig(
             username_env="TEST_INTERNAL_API_USERNAME", password_env="TEST_INTERNAL_API_PASSWORD"
         ),
@@ -77,9 +63,7 @@ def partners(monkeypatch):
         pgp_public_key_path="unused",
         outbound_auth=BasicAuthConfig(username="u", password_env="TEST_PARTNER_B_OUT_PW"),
         inbound_auth=ApiKeyAuthConfig(key_env="TEST_PARTNER_B_IN_KEY"),
-        envelope_overrides=EnvelopeOverrides(
-            header_mapping=HeaderOverrides({CanonicalField.TRANSACTION_SET: "x-transaction-set"})
-        ),
+        envelope_overrides=EnvelopeOverrides(use_refnum=True),
     )
     return PartnerRegistry([plain_partner, overridden_partner])
 

@@ -4,7 +4,7 @@ from app.crypto.gpg_wrapper import GpgService
 from app.partners import PartnerRegistry
 from app.settings import Settings
 from app.sinks.base import Sink
-from app.tracking.repository import MessageTracker
+from app.tracking.repository import MessageTracker, OutboundJobRepository
 
 
 def get_settings(request: Request) -> Settings:
@@ -29,3 +29,7 @@ def get_tracker(request: Request) -> MessageTracker:
 
 def get_sinks(request: Request) -> list[Sink]:
     return request.app.state.sinks
+
+
+def get_job_repository(request: Request) -> OutboundJobRepository:
+    return request.app.state.job_repository
