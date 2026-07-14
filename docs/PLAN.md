@@ -7,7 +7,7 @@ The existing EDI setup is a fork of OpenAS2, which only speaks AS2. NAESB
 it uses NAESB's own **Internet Electronic Transport (Internet ET)**
 protocol: PGP-encrypted payloads exchanged over HTTP(S) as a
 `multipart/form-data` POST, where each trading partner supplies the other
-with their PGP public key. This project (`naesb-edi`) replaces/supplements
+with their PGP public key. This project (`naesb-edi-gateway`) replaces/supplements
 the AS2 gateway with a purpose-built Internet ET gateway. No UI -- purely an
 HTTP/API service, intended to sit between internal systems and external
 NAESB trading partners (interstate pipeline operators).
@@ -46,7 +46,7 @@ partner directory), reimagined as YAML:
 ### Directory tree
 
 ```
-naesb-edi/
+naesb-edi-gateway/
 ├── pyproject.toml
 ├── README.md
 ├── Dockerfile

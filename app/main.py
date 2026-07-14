@@ -100,7 +100,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="naesb-edi", lifespan=lifespan)
+    app = FastAPI(title="naesb-edi-gateway", lifespan=lifespan)
     register_exception_handlers(app)
     app.include_router(health.router)
     app.include_router(send.router)

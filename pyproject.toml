@@ -1,5 +1,5 @@
 [project]
-name = "naesb-edi"
+name = "naesb-edi-gateway"
 version = "0.1.0"
 description = "NAESB WGQ 4.0 Internet ET (PGP-over-HTTP) EDI gateway"
 requires-python = ">=3.12"

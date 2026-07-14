@@ -1,4 +1,4 @@
-# naesb-edi
+# naesb-edi-gateway
 
 A NAESB Wholesale Gas Quadrant (WGQ) Version 4.0 Internet Electronic Transport
 (Internet ET) gateway: exchanges PGP-encrypted EDI transmissions with trading
