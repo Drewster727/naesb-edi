@@ -1,6 +1,6 @@
 [project]
 name = "naesb-edi-gateway"
-version = "0.3.0"
+version = "0.4.0"
 description = "NAESB WGQ 4.0 Internet ET (PGP-over-HTTP) EDI gateway"
 requires-python = ">=3.12"
 dependencies = [
