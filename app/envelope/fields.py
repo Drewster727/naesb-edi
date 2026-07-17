@@ -1,8 +1,11 @@
+import re
 from enum import Enum
 
 from pydantic import BaseModel, field_validator
 
 from app.duns import normalize_duns
+
+_TRANSACTION_SET_RE = re.compile(r"^[A-Za-z0-9_-]{8}$")
 
 
 class EnvelopeField(str, Enum):
@@ -68,8 +71,14 @@ class EnvelopeFields(BaseModel):
     @field_validator("transaction_set")
     @classmethod
     def _validate_transaction_set(cls, value: str | None) -> str | None:
-        if value is not None and len(value) != 8:
-            raise ValueError("transaction-set must be an 8-character code per the data dictionary")
+        # Charset-restricted (not just length) since this value flows
+        # unmodified into sink filenames/object keys (app/sinks/*) -- a
+        # path-separator or similar character here must never reach those.
+        if value is not None and not _TRANSACTION_SET_RE.match(value):
+            raise ValueError(
+                "transaction-set must be an 8-character alphanumeric code "
+                "(letters, digits, '_', '-') per the data dictionary"
+            )
         return value
 
     @field_validator("refnum", "refnum_orig")

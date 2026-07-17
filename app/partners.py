@@ -4,8 +4,9 @@ from typing import Annotated, Literal
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
+from app.crypto.policy import CIPHER_ALGO_IDS, DIGEST_ALGO_IDS
 from app.duns import normalize_duns
-from app.settings import resolve_env
+from app.settings import check_known_algo_names, resolve_env
 
 
 class BasicAuthConfig(BaseModel):
@@ -60,8 +61,19 @@ class CryptoOverrides(BaseModel):
     # that partner to rotate to a compliant key.
     min_rsa_key_bits: int | None = None
 
-    allowed_ciphers: list[str] | None = None
-    allowed_digests: list[str] | None = None
+    @field_validator("allowed_ciphers")
+    @classmethod
+    def _validate_allowed_ciphers(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None:
+            check_known_algo_names(value, CIPHER_ALGO_IDS, "allowed_ciphers")
+        return value
+
+    @field_validator("allowed_digests")
+    @classmethod
+    def _validate_allowed_digests(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None:
+            check_known_algo_names(value, DIGEST_ALGO_IDS, "allowed_digests")
+        return value
 
 
 class PartnerConfig(BaseModel):
@@ -73,12 +85,12 @@ class PartnerConfig(BaseModel):
     inbound_auth: AuthConfig
     envelope_overrides: EnvelopeOverrides | None = None
     crypto_overrides: CryptoOverrides | None = None
-    # Mirrors OpenAS2's reject_unsigned_messages="false": some real trading
-    # partners' systems don't actually PGP-sign their outbound messages
-    # despite a TPA nominally calling for it. Set false only for a partner
-    # with a documented, accepted gap -- transport-level auth (inbound_auth
-    # above) still authenticates the sender; this only stops enforcing the
-    # PGP-level signature/digest check on the payload itself.
+    # Some real trading partners' systems don't actually PGP-sign their
+    # outbound messages despite a TPA nominally calling for it. Set false
+    # only for a partner with a documented, accepted gap -- transport-level
+    # auth (inbound_auth above) still authenticates the sender; this only
+    # stops enforcing the PGP-level signature/digest check on the payload
+    # itself.
     require_signature: bool = True
 
     @field_validator("duns")
@@ -104,7 +116,7 @@ class PartnerRegistry:
         return self._by_name.get(name)
 
     def get_by_duns(self, duns: str) -> PartnerConfig | None:
-        return self._by_duns.get(duns)
+        return self._by_duns.get(normalize_duns(duns))
 
     def __iter__(self):
         return iter(self._by_name.values())

@@ -105,7 +105,7 @@ WGQ Cybersecurity Related Standards manual.
   through Python's `email` package. Parsing the untrusted outer
   `multipart/form-data` envelope on inbound requests uses Starlette's
   `request.form()` (backed by `python-multipart`) instead.
-- Config is split like OpenAS2's `config.xml`/`partnerships.xml`, as YAML:
+- Config is split into a global file and a per-partner directory, as YAML:
   `config/config.yaml` (global identity, crypto, envelope, server, sinks,
   DB, logging, outbound retry schedule) and `config/partners.yaml`
   (per-partner endpoint, keys, auth, envelope overrides).

@@ -92,8 +92,8 @@ def refnum_partner(monkeypatch):
 @pytest.fixture
 def unsigned_ok_partner(monkeypatch):
     """A partner with a documented, accepted gap: their real system doesn't
-    PGP-sign outbound messages at all (mirrors OpenAS2's
-    reject_unsigned_messages="false", see partners.yaml's require_signature)."""
+    PGP-sign outbound messages at all (see partners.yaml's
+    require_signature)."""
     monkeypatch.setenv("TEST_UNSIGNED_PARTNER_IN_KEY", "unsigned-partner-inbound-key")
     return PartnerConfig(
         name="unsigned-ok-pipeline",
@@ -297,6 +297,38 @@ def test_to_mismatch_rejected_as_invalid_to(settings, partners, gpg_service, fin
     receipt = _decode_receipt(gpg_service, us_key, response)
     assert not receipt.is_ok
     assert receipt.request_status.startswith("EEDM106")
+
+
+def test_wrong_version_rejected_as_invalid_version(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key):
+    client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
+    body, content_type = _build_body(
+        gpg_service, us_key, partner_key, "partner-passphrase", fields=_envelope_fields(version="9.9")
+    )
+
+    response = client.post("/inbound", headers={**_auth_headers(), "content-type": content_type}, content=body)
+
+    assert response.status_code == 200
+    receipt = _decode_receipt(gpg_service, us_key, response)
+    assert not receipt.is_ok
+    assert receipt.request_status.startswith("EEDM110")
+
+
+def test_unsupported_receipt_security_selection_rejected(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key):
+    client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
+    body, content_type = _build_body(
+        gpg_service,
+        us_key,
+        partner_key,
+        "partner-passphrase",
+        fields=_envelope_fields(receipt_security_selection="signed-receipt-protocol=required,smime"),
+    )
+
+    response = client.post("/inbound", headers={**_auth_headers(), "content-type": content_type}, content=body)
+
+    assert response.status_code == 200
+    receipt = _decode_receipt(gpg_service, us_key, response)
+    assert not receipt.is_ok
+    assert receipt.request_status.startswith("EEDM113")
 
 
 def test_to_missing_leading_zero_normalized_and_accepted(
@@ -620,3 +652,30 @@ def test_raw_request_capture_disabled_via_config(settings, partners, gpg_service
         client.post("/inbound", headers={**_auth_headers(), "content-type": content_type}, content=body)
 
     assert not any(e["event"] == "inbound_raw_request" for e in logs)
+
+
+class _BlowsUpOnSinkStatusTracker(FakeMessageTracker):
+    """Simulates an unexpected failure deep in post-decrypt processing (e.g. a
+    DB error) to verify it's still answered via a signed Receipt (standard
+    12.3.5) rather than a bare unsigned 500, and the message row lands in a
+    terminal 'rejected' status instead of stuck at 'processing'."""
+
+    async def update_sinks_status(self, message_id, sinks_status):
+        raise RuntimeError("simulated unexpected failure")
+
+
+def test_unexpected_exception_after_decrypt_still_returns_signed_receipt(
+    settings, partners, gpg_service, fingerprints, recording_sink, us_key, partner_key
+):
+    tracker = _BlowsUpOnSinkStatusTracker()
+    client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
+    body, content_type = _build_body(gpg_service, us_key, partner_key, "partner-passphrase")
+
+    response = client.post("/inbound", headers={**_auth_headers(), "content-type": content_type}, content=body)
+
+    assert response.status_code == 200
+    receipt = _decode_receipt(gpg_service, us_key, response)
+    assert not receipt.is_ok
+    assert "EEDM999" in receipt.request_status
+    (record,) = tracker.records.values()
+    assert record.status == "rejected"

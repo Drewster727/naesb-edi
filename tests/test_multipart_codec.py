@@ -1,5 +1,7 @@
+import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.envelope.fields import EnvelopeFields, InputFormat
 from app.envelope.multipart_codec import build_multipart_body, parse_multipart_form
@@ -98,3 +100,21 @@ def test_parse_invalid_input_format_raises():
     client = TestClient(_build_parse_app(), raise_server_exceptions=False)
     response = client.post("/parse", content=corrupted, headers={"content-type": content_type})
     assert response.status_code == 500
+
+
+def test_transaction_set_rejects_path_separator():
+    # transaction-set flows unmodified into sink filenames/object keys
+    # (app/sinks/filesystem_sink.py, app/sinks/s3_sink.py) -- a '/' must be
+    # rejected at the envelope-field boundary, not just length-checked.
+    with pytest.raises(ValidationError):
+        _fields(transaction_set="a/../..b")
+
+
+def test_transaction_set_rejects_wrong_length():
+    with pytest.raises(ValidationError):
+        _fields(transaction_set="TOOLONGCODE")
+
+
+def test_transaction_set_accepts_alnum_with_dash_and_underscore():
+    fields = _fields(transaction_set="NOM_00-1")
+    assert fields.transaction_set == "NOM_00-1"

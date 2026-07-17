@@ -112,6 +112,29 @@ async def receive(
     if fields.to_id != settings.identity.duns:
         return reject(NaesbErrorCode.INVALID_TO, "'to' does not match this gateway's identity")
 
+    # `version` and `receipt-security-selection` were previously only checked
+    # for presence (see app/envelope/multipart_codec.py's `require()`), never
+    # content -- meaning INVALID_VERSION/INVALID_RECEIPT_SECURITY_SELECTION
+    # were dead codes and an unsupported protocol version or a receipt
+    # security request this gateway can't honor was silently accepted.
+    expected_version = (
+        partner.envelope_overrides.version
+        if partner.envelope_overrides and partner.envelope_overrides.version
+        else settings.envelope.default_version
+    )
+    if fields.version != expected_version:
+        return reject(
+            NaesbErrorCode.INVALID_VERSION,
+            f"expected version {expected_version!r}, got {fields.version!r}",
+        )
+    if "pgp-signature" not in fields.receipt_security_selection.lower():
+        # This gateway only implements a PGP-signed receipt -- it can't honor
+        # a request for anything else.
+        return reject(
+            NaesbErrorCode.INVALID_RECEIPT_SECURITY_SELECTION,
+            "only a pgp-signature receipt protocol is supported",
+        )
+
     if partner.use_refnum and not fields.refnum:
         return reject(NaesbErrorCode.REFNUM_NOT_PRESENT)
 
@@ -145,100 +168,126 @@ async def receive(
         # find_duplicate()/find_refnum_reuse() above and this insert aren't
         # atomic -- a concurrent identical request can race between them.
         # The UNIQUE constraint on (partner_name, content_digest, direction)
-        # is the real backstop.
+        # (digest path) / (partner_name, refnum, direction) WHERE refnum IS
+        # NOT NULL (refnum path, 0004_unique_refnum.sql) is the real backstop.
+        if partner.use_refnum and fields.refnum:
+            return reject(NaesbErrorCode.DUPLICATE_REFNUM)
         return reject(GatewayExtensionCode.DUPLICATE_DIGEST)
 
-    # Step 5: decrypt + verify signature. GnuPG doesn't always discriminate
-    # between "public key invalid", "not encrypted", and "truncated" --
-    # per the spec's own "Pre-validation before Decryption" guidance, a
-    # generic decryption error (EEDM699) is used when finer classification
-    # isn't reliably available.
-    decrypt_result = gpg.decrypt_and_verify(ciphertext, settings.crypto.passphrase)
-    if not decrypt_result.ok:
-        await tracker.update_status(
-            message_id, status="rejected", error_code=NaesbErrorCode.DECRYPTION_ERROR.value
-        )
-        return reject(NaesbErrorCode.DECRYPTION_ERROR)
-
-    partner_fingerprint = fingerprints.get(partner.name)
-    signature_ok = (
-        decrypt_result.signature_valid and decrypt_result.signer_fingerprint == partner_fingerprint
-    )
-    if not signature_ok:
-        if not partner.require_signature:
-            # Documented, accepted gap (partners.yaml's require_signature:
-            # false) -- mirrors OpenAS2's reject_unsigned_messages="false".
-            # Transport-level auth already authenticated this partner; log
-            # it so accepting an unverified payload is visible, not silent.
-            logger.warning(
-                "inbound_accepted_without_signature",
-                partner=partner.name,
-                trans_id=trans_id,
-                signer_fingerprint=decrypt_result.signer_fingerprint,
-            )
-        else:
-            await tracker.update_status(
-                message_id,
-                status="rejected",
-                error_code=NaesbErrorCode.SIGNATURE_NOT_MATCHED.value,
-                receipt_verified=False,
-            )
-            return reject(NaesbErrorCode.SIGNATURE_NOT_MATCHED)
-
-    # Step 6: enforce this gateway's local cryptographic policy (NAESB
-    # itself only mandates a minimum RSA key length -- see policy.py). A
-    # partner's crypto_overrides (partners.yaml), when set, replaces the
-    # global default allow-list entirely for that partner.
-    overrides = partner.crypto_overrides
-    allowed_ciphers = (
-        overrides.allowed_ciphers
-        if overrides and overrides.allowed_ciphers
-        else settings.crypto.allowed_ciphers
-    )
-    allowed_digests = (
-        overrides.allowed_digests
-        if overrides and overrides.allowed_digests
-        else settings.crypto.allowed_digests
-    )
+    # Steps 5-8 (decrypt/verify through sink fan-out) are wrapped in a single
+    # try/except: standard 12.3.5 requires the Receiver to always answer via
+    # the signed Receipt once a complete file has been received and
+    # authenticated (steps 1-4 above), never a bare unsigned HTTP error. Any
+    # unexpected exception here (e.g. a malformed/truncated ciphertext GnuPG
+    # raises on instead of returning ok=False, or a local config/programming
+    # bug) is therefore reported as EEDM999 "System error" via the same
+    # signed-receipt path, and the message row is moved to a terminal
+    # 'rejected' status rather than left stuck at 'processing' forever.
     try:
-        enforce_policy(
-            decrypt_result.algo_info,
-            allowed_ciphers=set(allowed_ciphers),
-            allowed_digests=set(allowed_digests),
-            require_signature=partner.require_signature,
+        # Step 5: decrypt + verify signature. GnuPG doesn't always discriminate
+        # between "public key invalid", "not encrypted", and "truncated" --
+        # per the spec's own "Pre-validation before Decryption" guidance, a
+        # generic decryption error (EEDM699) is used when finer classification
+        # isn't reliably available.
+        decrypt_result = gpg.decrypt_and_verify(ciphertext, settings.crypto.passphrase)
+        if not decrypt_result.ok:
+            await tracker.update_status(
+                message_id, status="rejected", error_code=NaesbErrorCode.DECRYPTION_ERROR.value
+            )
+            return reject(NaesbErrorCode.DECRYPTION_ERROR)
+
+        partner_fingerprint = fingerprints.get(partner.name)
+        signature_ok = (
+            decrypt_result.signature_valid
+            and decrypt_result.signer_fingerprint == partner_fingerprint
         )
-    except WeakAlgorithmError as exc:
+        if not signature_ok:
+            if not partner.require_signature:
+                # Documented, accepted gap (partners.yaml's require_signature:
+                # false): some real trading partners' systems don't actually
+                # PGP-sign their outbound messages despite a TPA nominally
+                # calling for it. Transport-level auth already authenticated
+                # this partner; log it so accepting an unverified payload is
+                # visible, not silent.
+                logger.warning(
+                    "inbound_accepted_without_signature",
+                    partner=partner.name,
+                    trans_id=trans_id,
+                    signer_fingerprint=decrypt_result.signer_fingerprint,
+                )
+            else:
+                await tracker.update_status(
+                    message_id,
+                    status="rejected",
+                    error_code=NaesbErrorCode.SIGNATURE_NOT_MATCHED.value,
+                    receipt_verified=False,
+                )
+                return reject(NaesbErrorCode.SIGNATURE_NOT_MATCHED)
+
+        # Step 6: enforce this gateway's local cryptographic policy (NAESB
+        # itself only mandates a minimum RSA key length -- see policy.py). A
+        # partner's crypto_overrides (partners.yaml), when set, replaces the
+        # global default allow-list entirely for that partner.
+        overrides = partner.crypto_overrides
+        allowed_ciphers = (
+            overrides.allowed_ciphers
+            if overrides and overrides.allowed_ciphers
+            else settings.crypto.allowed_ciphers
+        )
+        allowed_digests = (
+            overrides.allowed_digests
+            if overrides and overrides.allowed_digests
+            else settings.crypto.allowed_digests
+        )
+        try:
+            enforce_policy(
+                decrypt_result.algo_info,
+                allowed_ciphers=set(allowed_ciphers),
+                allowed_digests=set(allowed_digests),
+                require_signature=partner.require_signature,
+            )
+        except WeakAlgorithmError as exc:
+            await tracker.update_status(
+                message_id, status="rejected", error_code=GatewayExtensionCode.WEAK_ALGORITHM.value
+            )
+            return reject(GatewayExtensionCode.WEAK_ALGORITHM, str(exc))
+
+        # Step 7: fan out to configured sinks.
+        inbound_message = InboundMessage(
+            partner_name=partner.name,
+            content_digest=content_digest,
+            envelope=fields,
+            plaintext=decrypt_result.plaintext,
+            received_at=received_at,
+        )
+        sink_results = await fan_out(sinks, inbound_message)
+        await tracker.update_sinks_status(
+            message_id, {name: {"ok": r.ok, "error": r.error} for name, r in sink_results.items()}
+        )
+
+        if settings.sinks.require_at_least_one_durable_success and not has_durable_success(
+            sinks, sink_results
+        ):
+            await tracker.update_status(
+                message_id, status="rejected", error_code=GatewayExtensionCode.SINK_FAILURE.value
+            )
+            return reject(GatewayExtensionCode.SINK_FAILURE)
+
+        # Step 8: accepted.
+        await tracker.update_status(message_id, status="accepted", receipt_verified=signature_ok)
+        logger.info(
+            "inbound_accepted", partner=partner.name, digest=content_digest, trans_id=trans_id
+        )
+        receipt = NaesbReceipt.ok(settings.envelope.server_id, trans_id, time_c=received_at)
+        return _signed_receipt(gpg, fingerprints, settings, receipt)
+    except Exception:
+        logger.exception(
+            "inbound_processing_failed", partner=partner.name, trans_id=trans_id
+        )
         await tracker.update_status(
-            message_id, status="rejected", error_code=GatewayExtensionCode.WEAK_ALGORITHM.value
+            message_id, status="rejected", error_code=NaesbErrorCode.SYSTEM_ERROR.value
         )
-        return reject(GatewayExtensionCode.WEAK_ALGORITHM, str(exc))
-
-    # Step 7: fan out to configured sinks.
-    inbound_message = InboundMessage(
-        partner_name=partner.name,
-        content_digest=content_digest,
-        envelope=fields,
-        plaintext=decrypt_result.plaintext,
-        received_at=received_at,
-    )
-    sink_results = await fan_out(sinks, inbound_message)
-    await tracker.update_sinks_status(
-        message_id, {name: {"ok": r.ok, "error": r.error} for name, r in sink_results.items()}
-    )
-
-    if settings.sinks.require_at_least_one_durable_success and not has_durable_success(
-        sinks, sink_results
-    ):
-        await tracker.update_status(
-            message_id, status="rejected", error_code=GatewayExtensionCode.SINK_FAILURE.value
-        )
-        return reject(GatewayExtensionCode.SINK_FAILURE)
-
-    # Step 8: accepted.
-    await tracker.update_status(message_id, status="accepted", receipt_verified=signature_ok)
-    logger.info("inbound_accepted", partner=partner.name, digest=content_digest, trans_id=trans_id)
-    receipt = NaesbReceipt.ok(settings.envelope.server_id, trans_id, time_c=received_at)
-    return _signed_receipt(gpg, fingerprints, settings, receipt)
+        return reject(NaesbErrorCode.SYSTEM_ERROR)
 
 
 def _redact_headers(headers: Mapping[str, str]) -> dict[str, str]:

@@ -51,7 +51,9 @@ def unwrap_pgp_encrypted(data: bytes, content_type: str) -> bytes:
     if len(parts) != 2:
         raise PgpMimeError(f"expected 2 parts in multipart/encrypted, got {len(parts)}")
     (control_headers, _control_body), (_payload_headers, payload_body) = parts
-    if not control_headers.get("content-type", "").startswith("application/pgp-encrypted"):
+    # Media types are case-insensitive per RFC 2045; header values (unlike
+    # names) aren't normalized by _parse_headers(), so lower-case here.
+    if not control_headers.get("content-type", "").lower().startswith("application/pgp-encrypted"):
         raise PgpMimeError("first multipart/encrypted part must be application/pgp-encrypted")
     if not payload_body:
         raise PgpMimeError("multipart/encrypted payload part is empty")
