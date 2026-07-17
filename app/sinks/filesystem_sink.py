@@ -24,9 +24,13 @@ class FilesystemSink:
         # rather than the partner's config-file name label.
         partner_dir = self.base_dir / message.envelope.from_id
         partner_dir.mkdir(parents=True, exist_ok=True)
+        # transaction-set is mutually-agreed/optional per the data
+        # dictionary (app/envelope/fields.py) -- f-stringing a bare None
+        # would otherwise literally embed the text "None" in the filename.
+        transaction_set = message.envelope.transaction_set or "unspecified"
         filename = (
             f"{message.received_at.strftime('%Y%m%dT%H%M%SZ')}"
             f"_{message.content_digest[:16]}"
-            f"_{message.envelope.transaction_set}.edi"
+            f"_{transaction_set}.edi"
         )
         (partner_dir / filename).write_bytes(message.plaintext)

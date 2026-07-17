@@ -55,6 +55,27 @@ def test_filesystem_sink_creates_duns_subdirectory(tmp_path):
     assert (tmp_path / "111222333").is_dir()
 
 
+def test_filesystem_sink_filename_omits_none_when_transaction_set_absent(tmp_path):
+    # transaction-set is optional/mutually-agreed -- a missing value must not
+    # literally f-string-interpolate to the text "None" in the filename.
+    sink = FilesystemSink(base_dir=str(tmp_path))
+    envelope = EnvelopeFields(
+        version="1.9",
+        from_id="987654321",
+        to_id="123456789",
+        receipt_disposition_to="987654321",
+        input_format=InputFormat.X12,
+        receipt_security_selection="signed-receipt-protocol=required,pgp-signature;signed-receipt-micalg=required,sha256",
+        transaction_set=None,
+    )
+    asyncio.run(sink.deliver(_message(envelope=envelope)))
+
+    written = list((tmp_path / "987654321").iterdir())
+    assert len(written) == 1
+    assert "None" not in written[0].name
+    assert written[0].name.endswith("_unspecified.edi")
+
+
 def test_filesystem_sink_reports_failure_on_unwritable_dir(tmp_path):
     unwritable = tmp_path / "locked"
     unwritable.mkdir(mode=0o400)

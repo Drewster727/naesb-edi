@@ -59,6 +59,36 @@ def test_s3_sink_puts_object(s3_bucket):
     assert body == b"ISA*00*..."
 
 
+def test_s3_sink_key_omits_none_when_transaction_set_absent(s3_bucket):
+    # transaction-set is optional/mutually-agreed -- a missing value must not
+    # literally f-string-interpolate to the text "None" in the object key.
+    sink = S3Sink(
+        bucket=s3_bucket,
+        prefix="inbound/",
+        region="us-east-1",
+        endpoint_url=None,
+        access_key="test",
+        secret_key="test",
+    )
+    envelope = EnvelopeFields(
+        version="1.9",
+        from_id="987654321",
+        to_id="123456789",
+        receipt_disposition_to="987654321",
+        input_format=InputFormat.X12,
+        receipt_security_selection="signed-receipt-protocol=required,pgp-signature;signed-receipt-micalg=required,sha256",
+        transaction_set=None,
+    )
+    asyncio.run(sink.deliver(_message(envelope=envelope)))
+
+    client = boto3.client("s3", region_name="us-east-1")
+    listing = client.list_objects_v2(Bucket=s3_bucket, Prefix="inbound/987654321/")
+    assert listing["KeyCount"] == 1
+    key = listing["Contents"][0]["Key"]
+    assert "None" not in key
+    assert key.endswith("_unspecified.edi")
+
+
 def test_s3_sink_reports_failure_for_missing_bucket():
     with mock_aws():
         sink = S3Sink(
