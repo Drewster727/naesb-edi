@@ -2,15 +2,13 @@
 
 ## Context
 
-The existing EDI setup is a fork of OpenAS2, which only speaks AS2. NAESB
-4.0 (Wholesale Gas Quadrant Business Practice Standards) does not use AS2 --
-it uses NAESB's own **Internet Electronic Transport (Internet ET)**
-protocol: PGP-encrypted payloads exchanged over HTTP(S) as a
-`multipart/form-data` POST, where each trading partner supplies the other
-with their PGP public key. This project (`naesb-edi-gateway`) replaces/supplements
-the AS2 gateway with a purpose-built Internet ET gateway. No UI -- purely an
-HTTP/API service, intended to sit between internal systems and external
-NAESB trading partners (interstate pipeline operators).
+NAESB 4.0 (Wholesale Gas Quadrant Business Practice Standards) defines its
+own **Internet Electronic Transport (Internet ET)** protocol: PGP-encrypted
+payloads exchanged over HTTP(S) as a `multipart/form-data` POST, where each
+trading partner supplies the other with their PGP public key. This project
+(`naesb-edi-gateway`) is a purpose-built, from-scratch Internet ET gateway.
+No UI -- purely an HTTP/API service, intended to sit between internal
+systems and external NAESB trading partners (interstate pipeline operators).
 
 **Spec provenance note (revised):** an earlier version of this plan was
 built against `docs/naesb4.md`, a document that turned out to be
@@ -32,16 +30,15 @@ owner rather than guessed: the exact `version` protocol-version default
 Python 3.12, FastAPI (inbound HTTP server) + httpx (outbound client,
 single-attempt), a separate worker process for outbound retry scheduling,
 Pydantic v2 for all config/schema validation, `python-gnupg` wrapping
-system GnuPG for OpenPGP. Config follows OpenAS2's split (central config +
-partner directory), reimagined as YAML:
+system GnuPG for OpenPGP. Config is split into a central config file plus a
+partner directory, as YAML:
 
 - `config/config.yaml` -- our identity, envelope defaults, server/crypto/db/
-  sink defaults, outbound retry schedule, logging (equivalent of OpenAS2's
-  `config.xml`).
+  sink defaults, outbound retry schedule, logging.
 - `config/partners.yaml` -- one entry per trading partner: name, DUNS
   number, endpoint URL, PGP public key reference, inbound/outbound auth
   credentials, per-partner envelope overrides (protocol version, agreed
-  transaction sets, refnum usage) (equivalent of `partnerships.xml`).
+  transaction sets, refnum usage).
 
 ### Directory tree
 

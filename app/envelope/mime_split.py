@@ -8,6 +8,8 @@ etc.), and PGP signatures are byte-exact. This hand-rolled splitter never
 reconstructs bytes -- it only slices the original buffer.
 """
 
+import re
+
 CRLF = b"\r\n"
 
 
@@ -28,10 +30,24 @@ def split_mime_parts(data: bytes, boundary: str) -> list[tuple[dict[str, str], b
     """Split a MIME multipart body into (headers, body) pairs for each part,
     given the boundary token (without the leading `--`)."""
     marker = b"--" + boundary.encode()
-    raw_parts = data.split(marker)
+    # Per RFC 2046, a boundary delimiter line must be preceded by a line break
+    # (or be at the very start of the body) -- a plain substring search would
+    # also match the marker bytes appearing anywhere inside binary part
+    # content (e.g. PGP ciphertext) not actually at a line start. Only
+    # relevant for partner-chosen boundaries (our own are 128 bits of random
+    # hex, so a spurious mid-content collision is negligible either way).
+    # Tolerates a bare LF as well as CRLF before the marker, matching this
+    # module's existing tolerance for LF-only producers (see the `\n\n`
+    # fallback below) -- real trading partners' MIME stacks aren't uniform.
+    boundary_pattern = re.compile(b"(?:^|" + re.escape(CRLF) + b"|\n)" + re.escape(marker))
+    raw_parts = boundary_pattern.split(data)
     if len(raw_parts) < 3:
         raise MimeSplitError(f"boundary {boundary!r} not found (or found only once) in MIME body")
 
+    # The line break immediately preceding each boundary occurrence (matched
+    # above) is part of the *next* part's leading delimiter, not trailing
+    # content -- re.split() already consumes it, so unlike a bare substring
+    # split, no further trailing-newline stripping is needed here.
     parts: list[tuple[dict[str, str], bytes]] = []
     for raw in raw_parts[1:]:
         if raw.startswith(b"--"):
@@ -43,10 +59,6 @@ def split_mime_parts(data: bytes, boundary: str) -> list[tuple[dict[str, str], b
             header_bytes, body = raw.split(b"\n\n", 1)
         else:
             header_bytes, body = b"", raw
-        if body.endswith(CRLF):
-            body = body[:-2]
-        elif body.endswith(b"\n"):
-            body = body[:-1]
         parts.append((_parse_headers(header_bytes), body))
 
     if not parts:

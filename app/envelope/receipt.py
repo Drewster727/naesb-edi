@@ -4,6 +4,7 @@ signature) wrapping `multipart/report` (report-type=
 v4.0, "Receiving Internet ET Packages" / "Acknowledgement Receipt".
 """
 
+import re
 import secrets
 from datetime import UTC, datetime
 
@@ -14,6 +15,17 @@ from app.envelope.mime_split import MimeSplitError, content_type_param, split_mi
 
 CRLF = b"\r\n"
 TIME_C_FORMAT = "%Y%m%d%H%M%S"
+
+# `*` is the field delimiter in _fields_text()'s `key=value*` encoding, and
+# CR/LF would break out of a single logical line -- descriptions can carry
+# attacker-influenced text (e.g. a raw envelope field value or a pydantic
+# ValidationError message echoing it back), so any of these characters must
+# be neutralized before being embedded in a signed receipt.
+_UNSAFE_RECEIPT_TEXT = re.compile(r"[*\r\n]")
+
+
+def _sanitize_receipt_text(value: str) -> str:
+    return _UNSAFE_RECEIPT_TEXT.sub(" ", value)
 
 
 class ReceiptDecodeError(Exception):
@@ -52,9 +64,10 @@ class NaesbReceipt(BaseModel):
         *,
         time_c: datetime | None = None,
     ) -> "NaesbReceipt":
+        safe_description = _sanitize_receipt_text(description) if description else None
         return cls(
             time_c=(time_c or datetime.now(UTC)).strftime(TIME_C_FORMAT),
-            request_status=f"{code.value}: {description or describe(code)}",
+            request_status=f"{code.value}: {safe_description or describe(code)}",
             server_id=server_id,
             trans_id=str(trans_id),
         )
@@ -109,7 +122,8 @@ class NaesbReceipt(BaseModel):
 
         text_body: bytes | None = None
         for headers, body in parts:
-            if headers.get("content-type", "").startswith("text/plain"):
+            # Media types are case-insensitive per RFC 2045.
+            if headers.get("content-type", "").lower().startswith("text/plain"):
                 text_body = body
                 break
         if text_body is None:
@@ -175,6 +189,6 @@ def parse_signed_mime(data: bytes, content_type: str) -> tuple[bytes, str, bytes
     report_content_type = report_headers.get("content-type")
     if not report_content_type:
         raise ReceiptDecodeError("multipart/report part is missing a content-type header")
-    if not sig_headers.get("content-type", "").startswith("application/pgp-signature"):
+    if not sig_headers.get("content-type", "").lower().startswith("application/pgp-signature"):
         raise ReceiptDecodeError("second multipart/signed part must be application/pgp-signature")
     return report_body, report_content_type, sig_body

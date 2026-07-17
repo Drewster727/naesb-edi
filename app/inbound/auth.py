@@ -41,6 +41,11 @@ def _check_basic(encoded: str, auth: BasicAuthConfig) -> bool:
     except (binascii.Error, UnicodeDecodeError):
         return False
     username, _, password = decoded.partition(":")
-    return secrets.compare_digest(username, auth.username) and secrets.compare_digest(
-        password, auth.password
-    )
+    # Evaluate both comparisons unconditionally rather than short-circuiting
+    # with `and` -- a wrong-username request would otherwise skip the
+    # password compare_digest() call entirely, making it measurably faster
+    # than a right-username/wrong-password request (a timing oracle for
+    # username enumeration across the configured partner list).
+    username_ok = secrets.compare_digest(username, auth.username)
+    password_ok = secrets.compare_digest(password, auth.password)
+    return username_ok and password_ok

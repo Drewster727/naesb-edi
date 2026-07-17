@@ -40,6 +40,27 @@ def test_rejected_receipt_uses_gateway_extension_code():
     assert b"GWX-DUPLICATE-DIGEST" in report_body
 
 
+def test_rejected_receipt_sanitizes_delimiter_and_newlines_in_description():
+    # `description` can carry attacker-influenced text (e.g. a raw envelope
+    # field value echoed back in a validation error); '*' is the field
+    # delimiter in the receipt's own encoding and CR/LF would break out of a
+    # single logical line, so both must be neutralized rather than passed
+    # through verbatim.
+    malicious = "bad value*request-status=ok*injected\r\nmore-injection=1"
+    receipt = NaesbReceipt.rejected(
+        "coolhost", 3, NaesbErrorCode.INVALID_TRANSACTION_SET, malicious
+    )
+    report_body, content_type = receipt.encode_report_part()
+
+    assert b"*" not in receipt.request_status.encode()
+    assert b"\r" not in receipt.request_status.encode()
+    assert b"\n" not in receipt.request_status.encode()
+
+    decoded = NaesbReceipt.decode_report_part(report_body, content_type)
+    assert decoded.request_status.startswith("EEDM108")
+    assert not decoded.is_ok
+
+
 def test_time_c_format_is_yyyymmddhhmmss():
     import datetime
 
@@ -97,6 +118,28 @@ def test_full_signed_receipt_round_trip_with_real_gpg(gpg_service, us_key):
 
     decoded = NaesbReceipt.decode_report_part(parsed_report_body, parsed_report_content_type)
     assert decoded == receipt
+
+
+def test_decode_report_part_accepts_mixed_case_content_type():
+    receipt = NaesbReceipt.ok("coolhost", 1)
+    report_body, content_type = receipt.encode_report_part()
+    mixed_case = report_body.replace(b"content-type: text/plain", b"content-type: Text/Plain")
+
+    decoded = NaesbReceipt.decode_report_part(mixed_case, content_type)
+    assert decoded == receipt
+
+
+def test_parse_signed_mime_accepts_mixed_case_signature_content_type():
+    receipt = NaesbReceipt.ok("coolhost", 1)
+    report_body, report_content_type = receipt.encode_report_part()
+    fake_signature = b"-----BEGIN PGP SIGNATURE-----\nfake\n-----END PGP SIGNATURE-----\n"
+    signed_body, content_type = build_signed_mime(report_body, report_content_type, fake_signature, "pgp-sha256")
+    mixed_case = signed_body.replace(
+        b"content-type: application/pgp-signature", b"content-type: Application/PGP-Signature"
+    )
+
+    _, _, parsed_signature = parse_signed_mime(mixed_case, content_type)
+    assert parsed_signature.rstrip(b"\r\n") == fake_signature.rstrip(b"\r\n")
 
 
 def test_parse_signed_mime_rejects_wrong_part_count():

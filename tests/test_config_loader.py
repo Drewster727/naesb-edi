@@ -72,6 +72,26 @@ def test_load_settings_envelope_requires_server_id(tmp_path):
         load_settings(path)
 
 
+def test_load_settings_rejects_unknown_allowed_cipher(tmp_path):
+    bad = {
+        **VALID_CONFIG,
+        "crypto": {**VALID_CONFIG["crypto"], "allowed_ciphers": ["AES256", "AES-NOT-REAL"]},
+    }
+    path = _write_yaml(tmp_path / "config.yaml", bad)
+    with pytest.raises(Exception):
+        load_settings(path)
+
+
+def test_load_settings_rejects_unknown_allowed_digest(tmp_path):
+    bad = {
+        **VALID_CONFIG,
+        "crypto": {**VALID_CONFIG["crypto"], "allowed_digests": ["SHA256", "SHA-NOT-REAL"]},
+    }
+    path = _write_yaml(tmp_path / "config.yaml", bad)
+    with pytest.raises(Exception):
+        load_settings(path)
+
+
 def test_resolve_env_missing_raises(tmp_path, monkeypatch):
     monkeypatch.delenv("TEST_GPG_PASSPHRASE", raising=False)
     path = _write_yaml(tmp_path / "config.yaml", VALID_CONFIG)
@@ -172,3 +192,27 @@ def test_partner_use_refnum_defaults_false(tmp_path):
     registry = load_partners(path)
     partner = registry.get_by_name("acme-pipeline")
     assert partner.use_refnum is False
+
+
+def test_partner_crypto_override_rejects_unknown_cipher(tmp_path):
+    with_bad_override = {
+        "partners": [
+            {
+                **VALID_PARTNERS["partners"][0],
+                "crypto_overrides": {"allowed_ciphers": ["NOT-A-REAL-CIPHER"]},
+            }
+        ]
+    }
+    path = _write_yaml(tmp_path / "partners.yaml", with_bad_override)
+    with pytest.raises(Exception):
+        load_partners(path)
+
+
+def test_get_by_duns_normalizes_leading_zeros(tmp_path):
+    padded = {
+        "partners": [{**VALID_PARTNERS["partners"][0], "duns": "023456789"}],
+    }
+    path = _write_yaml(tmp_path / "partners.yaml", padded)
+    registry = load_partners(path)
+    partner = registry.get_by_name("acme-pipeline")
+    assert registry.get_by_duns("23456789") is partner  # non-padded lookup still resolves

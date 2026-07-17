@@ -32,6 +32,14 @@ def test_unwrap_wrong_first_part_type_raises():
         unwrap_pgp_encrypted(tampered, content_type)
 
 
+def test_unwrap_accepts_mixed_case_content_type():
+    # Media types are case-insensitive per RFC 2045 -- a partner's MIME
+    # stack emitting e.g. "Application/Pgp-Encrypted" must still be accepted.
+    body, content_type = wrap_pgp_encrypted(b"payload-bytes")
+    mixed_case = body.replace(b"application/pgp-encrypted", b"Application/Pgp-Encrypted", 1)
+    assert unwrap_pgp_encrypted(mixed_case, content_type) == b"payload-bytes"
+
+
 def test_wrap_unwrap_roundtrip_empty_ciphertext_rejected():
     body, content_type = wrap_pgp_encrypted(b"x")
     # Sanity: a genuinely empty payload part should still fail cleanly

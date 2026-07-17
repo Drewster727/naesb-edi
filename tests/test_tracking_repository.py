@@ -100,6 +100,32 @@ async def test_find_refnum_reuse(tracker):
     assert not await tracker.find_refnum_reuse("acme-pipeline", "refnum-1", "outbound")
 
 
+async def test_create_rejects_duplicate_refnum_same_partner_and_direction(tracker):
+    # Different content_digest so the (partner_name, content_digest, direction)
+    # constraint can't be what raises -- this exercises the dedicated
+    # (partner_name, refnum, direction) WHERE refnum IS NOT NULL unique index
+    # from 0004_unique_refnum.sql, the DB-level backstop for the refnum-dedup
+    # race (mirrors test_update_status's digest-uniqueness assertion above).
+    first = MessageRecord(
+        direction="inbound",
+        partner_name="acme-pipeline",
+        content_digest="g" * 64,
+        status="processing",
+        refnum="dup-refnum",
+    )
+    await tracker.create(first)
+
+    second = MessageRecord(
+        direction="inbound",
+        partner_name="acme-pipeline",
+        content_digest="h" * 64,
+        status="processing",
+        refnum="dup-refnum",
+    )
+    with pytest.raises(Exception):
+        await tracker.create(second)
+
+
 async def test_outbound_job_create_claim_and_deliver(job_repository):
     job = OutboundJob(
         id=None,

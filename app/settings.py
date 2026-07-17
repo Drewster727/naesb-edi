@@ -6,6 +6,7 @@ from urllib.parse import urlsplit, urlunsplit
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
+from app.crypto.policy import CIPHER_ALGO_IDS, DIGEST_ALGO_IDS
 from app.duns import normalize_duns
 
 
@@ -20,6 +21,17 @@ def resolve_env(var_name: str) -> str:
     if value is None:
         raise MissingEnvVarError(var_name)
     return value
+
+
+def check_known_algo_names(names: list[str], known_ids: dict[str, int], field_name: str) -> None:
+    """Fail fast at config-load time rather than raising a bare KeyError the
+    first time a real inbound message hits app/crypto/policy.py::enforce_policy()."""
+    unknown = [name for name in names if name not in known_ids]
+    if unknown:
+        raise ValueError(
+            f"{field_name} contains unknown algorithm name(s) {unknown!r}; "
+            f"known names are {sorted(known_ids)}"
+        )
 
 
 class IdentityConfig(BaseModel):
@@ -72,6 +84,18 @@ class CryptoConfig(BaseModel):
     allowed_digests: list[str] = Field(
         default_factory=lambda: ["SHA256", "SHA384", "SHA512", "SHA1"]
     )
+
+    @field_validator("allowed_ciphers")
+    @classmethod
+    def _validate_allowed_ciphers(cls, value: list[str]) -> list[str]:
+        check_known_algo_names(value, CIPHER_ALGO_IDS, "allowed_ciphers")
+        return value
+
+    @field_validator("allowed_digests")
+    @classmethod
+    def _validate_allowed_digests(cls, value: list[str]) -> list[str]:
+        check_known_algo_names(value, DIGEST_ALGO_IDS, "allowed_digests")
+        return value
 
     @property
     def passphrase(self) -> str:

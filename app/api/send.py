@@ -6,6 +6,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.api.partners import require_internal_auth
 from app.crypto.gpg_wrapper import GpgService
 from app.dependencies import (
     get_fingerprints,
@@ -52,6 +53,7 @@ class JobStatusResponse(BaseModel):
 @router.post("/outbound/send", response_model=SendAcceptedResponse, status_code=202)
 async def trigger_send(
     body: SendRequest,
+    _: None = Depends(require_internal_auth),
     settings: Settings = Depends(get_settings),
     partners: PartnerRegistry = Depends(get_partners),
     gpg: GpgService = Depends(get_gpg),
@@ -121,7 +123,9 @@ async def trigger_send(
 
 @router.get("/outbound/jobs/{job_id}", response_model=JobStatusResponse)
 async def get_job_status(
-    job_id: uuid.UUID, jobs: OutboundJobRepository = Depends(get_job_repository)
+    job_id: uuid.UUID,
+    _: None = Depends(require_internal_auth),
+    jobs: OutboundJobRepository = Depends(get_job_repository),
 ) -> JobStatusResponse:
     job = await jobs.get(job_id)
     if job is None:

@@ -31,8 +31,8 @@ partners:
     #   min_rsa_key_bits: 1024
     # require_signature defaults true. Set false only for a partner with a
     # documented, accepted gap -- e.g. their real system doesn't actually
-    # PGP-sign outbound messages despite a TPA nominally calling for it
-    # (mirrors OpenAS2's reject_unsigned_messages="false"). Transport-level
-    # auth (inbound_auth above) still authenticates the sender; this only
-    # stops enforcing the PGP-level signature/digest check on the payload.
+    # PGP-sign outbound messages despite a TPA nominally calling for it.
+    # Transport-level auth (inbound_auth above) still authenticates the
+    # sender; this only stops enforcing the PGP-level signature/digest check
+    # on the payload.
     require_signature: true
