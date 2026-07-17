@@ -2,8 +2,9 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from app.duns import normalize_duns
 from app.settings import resolve_env
 
 
@@ -79,6 +80,11 @@ class PartnerConfig(BaseModel):
     # above) still authenticates the sender; this only stops enforcing the
     # PGP-level signature/digest check on the payload itself.
     require_signature: bool = True
+
+    @field_validator("duns")
+    @classmethod
+    def _normalize_duns(cls, value: str) -> str:
+        return normalize_duns(value)
 
     @property
     def use_refnum(self) -> bool:

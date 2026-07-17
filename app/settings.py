@@ -4,7 +4,9 @@ from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.duns import normalize_duns
 
 
 class MissingEnvVarError(RuntimeError):
@@ -23,6 +25,11 @@ def resolve_env(var_name: str) -> str:
 class IdentityConfig(BaseModel):
     name: str
     duns: str
+
+    @field_validator("duns")
+    @classmethod
+    def _normalize_duns(cls, value: str) -> str:
+        return normalize_duns(value)
 
 
 class ServerConfig(BaseModel):

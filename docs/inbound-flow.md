@@ -95,7 +95,15 @@ Before anything reaches us, the trading partner:
 4. **`from` must equal the authenticated partner's DUNS.** A mismatch
    (someone authenticated as partner A but claiming to be partner B in the
    envelope) is `EEDM701` — "Sending party not associated with Receiving
-   party."
+   party." **`to` must equal this gateway's own DUNS** (`identity.duns` in
+   `config/config.yaml`) — a mismatch (the message isn't actually addressed
+   to us) is `EEDM106`, "Invalid 'to' Common Code Identifier." Both
+   comparisons normalize pure-numeric values shorter than 9 digits by
+   left-padding with zeros first (`app/duns.py::normalize_duns()`), applied
+   to `from`/`to` at envelope-parse time and to `partner.duns`/
+   `identity.duns` at config-load time — a DUNS with a leading zero that a
+   sender's system dropped (common when it's stored as an integer
+   upstream) still matches correctly.
 5. **If this partner is configured `use_refnum: true`** and didn't include
    a `refnum`, that's `EEDM119` — "Mutually agreed element, refnum, not
    present."
@@ -230,6 +238,7 @@ detected duplicate.
 | Parse | Missing required field | `EEDM1xx` (exact code per field, see `error_codes.py::FIELD_ERROR_CODES`) |
 | Parse | Invalid `input-format`/`version`/etc. | `EEDM1xx` (invalid variant) |
 | Authorize | `from` ≠ authenticated partner | `EEDM701` |
+| Authorize | `to` ≠ our identity | `EEDM106` |
 | Authorize | Refnum required but missing | `EEDM119` |
 | Dedup | Refnum reused | `EEDM121` |
 | Dedup | Ciphertext digest reused (no refnum) | `GWX-DUPLICATE-DIGEST` |

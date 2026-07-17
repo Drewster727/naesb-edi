@@ -2,6 +2,8 @@ from enum import Enum
 
 from pydantic import BaseModel, field_validator
 
+from app.duns import normalize_duns
+
 
 class EnvelopeField(str, Enum):
     """Literal NAESB Internet ET envelope/multipart field names, per the
@@ -57,6 +59,11 @@ class EnvelopeFields(BaseModel):
     transaction_set: str | None = None
     refnum: str | None = None
     refnum_orig: str | None = None
+
+    @field_validator("from_id", "to_id")
+    @classmethod
+    def _normalize_duns(cls, value: str) -> str:
+        return normalize_duns(value)
 
     @field_validator("transaction_set")
     @classmethod

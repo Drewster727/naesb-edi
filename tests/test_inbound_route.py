@@ -285,6 +285,74 @@ def test_from_mismatch_rejected_as_sender_not_associated(settings, partners, gpg
     assert receipt.request_status.startswith("EEDM701")
 
 
+def test_to_mismatch_rejected_as_invalid_to(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key):
+    client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
+    body, content_type = _build_body(
+        gpg_service, us_key, partner_key, "partner-passphrase", fields=_envelope_fields(to_id="000000000")
+    )
+
+    response = client.post("/inbound", headers={**_auth_headers(), "content-type": content_type}, content=body)
+
+    assert response.status_code == 200
+    receipt = _decode_receipt(gpg_service, us_key, response)
+    assert not receipt.is_ok
+    assert receipt.request_status.startswith("EEDM106")
+
+
+def test_to_missing_leading_zero_normalized_and_accepted(
+    settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key
+):
+    # Our real DUNS has a leading zero; a sender whose system dropped it
+    # (e.g. treated the value as an integer) should still be recognized.
+    padded_settings = settings.model_copy(
+        update={"identity": IdentityConfig(name="MyCompany", duns="023456789")}
+    )
+    client = build_client(padded_settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
+    body, content_type = _build_body(
+        gpg_service, us_key, partner_key, "partner-passphrase", fields=_envelope_fields(to_id="23456789")
+    )
+
+    response = client.post("/inbound", headers={**_auth_headers(), "content-type": content_type}, content=body)
+
+    assert response.status_code == 200
+    receipt = _decode_receipt(gpg_service, us_key, response)
+    assert receipt.is_ok
+
+
+def test_from_missing_leading_zero_normalized_and_accepted(
+    settings, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key, monkeypatch
+):
+    # Same normalization applies to a partner's DUNS with a leading zero.
+    monkeypatch.setenv("TEST_PADDED_PARTNER_IN_KEY", "padded-partner-inbound-key")
+    padded_partner = PartnerConfig(
+        name="padded-duns-pipeline",
+        duns="087654321",
+        endpoint_url="https://padded-partner.example.com/edi/receiver-endpoint",
+        pgp_public_key_path="unused",
+        outbound_auth=BasicAuthConfig(username="u", password_env="TEST_PADDED_PARTNER_OUT_PW_UNUSED"),
+        inbound_auth=ApiKeyAuthConfig(key_env="TEST_PADDED_PARTNER_IN_KEY"),
+    )
+    padded_partners = PartnerRegistry([padded_partner])
+    padded_fingerprints = {**fingerprints, "padded-duns-pipeline": partner_key}
+    client = build_client(settings, padded_partners, gpg_service, padded_fingerprints, tracker, [recording_sink])
+    body, content_type = _build_body(
+        gpg_service, us_key, partner_key, "partner-passphrase", fields=_envelope_fields(from_id="87654321")
+    )
+
+    response = client.post(
+        "/inbound",
+        headers={
+            **_auth_headers(authorization="Bearer padded-partner-inbound-key"),
+            "content-type": content_type,
+        },
+        content=body,
+    )
+
+    assert response.status_code == 200
+    receipt = _decode_receipt(gpg_service, us_key, response)
+    assert receipt.is_ok
+
+
 def test_decryption_failure_rejected(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key):
     client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
     body, content_type = build_multipart_body(_envelope_fields(), b"not a valid PGP message at all")

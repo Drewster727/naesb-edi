@@ -101,11 +101,16 @@ async def receive(
     except Exception as exc:  # noqa: BLE001 - malformed multipart body entirely
         return reject(NaesbErrorCode.NO_PARAMETERS_SUPPLIED, f"malformed multipart body: {exc}")
 
-    # Step 3: the authenticated partner's DUNS must match the claimed 'from'.
+    # Step 3: envelope identity checks. The authenticated partner's DUNS
+    # must match the claimed 'from', and the claimed 'to' must match this
+    # gateway's own identity -- otherwise the message isn't actually
+    # addressed to us.
     if fields.from_id != partner.duns:
         return reject(
             NaesbErrorCode.SENDER_NOT_ASSOCIATED, "'from' does not match the authenticated partner"
         )
+    if fields.to_id != settings.identity.duns:
+        return reject(NaesbErrorCode.INVALID_TO, "'to' does not match this gateway's identity")
 
     if partner.use_refnum and not fields.refnum:
         return reject(NaesbErrorCode.REFNUM_NOT_PRESENT)
