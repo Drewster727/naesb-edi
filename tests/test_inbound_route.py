@@ -90,6 +90,23 @@ def refnum_partner(monkeypatch):
 
 
 @pytest.fixture
+def version_override_partner(monkeypatch):
+    """A partner whose TPA specifies a protocol version other than
+    config.yaml's envelope.default_version (e.g. southern-star sending
+    version "3.0" against a "1.9" global default)."""
+    monkeypatch.setenv("TEST_VERSION_OVERRIDE_PARTNER_IN_KEY", "version-override-partner-inbound-key")
+    return PartnerConfig(
+        name="version-override-pipeline",
+        duns="777888999",
+        endpoint_url="https://version-override-partner.example.com/edi/receiver-endpoint",
+        pgp_public_key_path="unused",
+        outbound_auth=BasicAuthConfig(username="u", password_env="TEST_VERSION_OVERRIDE_PARTNER_OUT_PW_UNUSED"),
+        inbound_auth=ApiKeyAuthConfig(key_env="TEST_VERSION_OVERRIDE_PARTNER_IN_KEY"),
+        envelope_overrides=EnvelopeOverrides(version="3.0"),
+    )
+
+
+@pytest.fixture
 def unsigned_ok_partner(monkeypatch):
     """A partner with a documented, accepted gap: their real system doesn't
     PGP-sign outbound messages at all (see partners.yaml's
@@ -118,6 +135,7 @@ def fingerprints(us_key, partner_key):
         PARTNER_NAME: partner_key,
         "refnum-pipeline": partner_key,
         "unsigned-ok-pipeline": partner_key,
+        "version-override-pipeline": partner_key,
     }
 
 
@@ -311,6 +329,27 @@ def test_wrong_version_rejected_as_invalid_version(settings, partners, gpg_servi
     receipt = _decode_receipt(gpg_service, us_key, response)
     assert not receipt.is_ok
     assert receipt.request_status.startswith("EEDM110")
+
+
+def test_partner_version_override_accepted(
+    settings, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key, version_override_partner
+):
+    """A partner with envelope_overrides.version set should be validated
+    against that override, not config.yaml's global default_version."""
+    partners = PartnerRegistry([version_override_partner])
+    client = build_client(settings, partners, gpg_service, fingerprints, tracker, [recording_sink])
+    fields = _envelope_fields(from_id=version_override_partner.duns, version="3.0")
+    body, content_type = _build_body(gpg_service, us_key, partner_key, "partner-passphrase", fields=fields)
+
+    response = client.post(
+        "/inbound",
+        headers={"authorization": "Bearer version-override-partner-inbound-key", "content-type": content_type},
+        content=body,
+    )
+
+    assert response.status_code == 200
+    receipt = _decode_receipt(gpg_service, us_key, response)
+    assert receipt.is_ok
 
 
 def test_unsupported_receipt_security_selection_rejected(settings, partners, gpg_service, fingerprints, tracker, recording_sink, us_key, partner_key):
