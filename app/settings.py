@@ -231,6 +231,29 @@ class OutboundConfig(BaseModel):
     worker_poll_interval_seconds: float = 15.0
 
 
+class PollerConfig(BaseModel):
+    """Config for app/poller.py -- the file-drop outbound entry point.
+    Watches `base_dir/<duns>/` for raw, unencrypted EDI files, moving each
+    into that partner's `processed/` (once handed to the delivery queue) or
+    `error/` (pickup failed after `max_pickup_attempts` tries) subfolder."""
+
+    enabled: bool = False
+    base_dir: str = "/data/outbound"
+    # How often the poller scans base_dir for new files.
+    poll_interval_seconds: float = 15.0
+    # A file is only picked up once it hasn't been modified for at least
+    # this long, so a writer still streaming the file to disk isn't read
+    # mid-write.
+    quiet_period_seconds: int = 60
+    # Bounded retries for a failure *before* the file reaches outbound_jobs
+    # (unreadable file, encryption failure, DB unavailable) -- mirrors the
+    # "3 attempts" language already used for delivery retries
+    # (outbound.retry_schedule_seconds). Exhausting these moves the file to
+    # error/; this is unrelated to (and doesn't wait on) the separate
+    # delivery-retry/Exchange-Failure outcome tracked in outbound_jobs.
+    max_pickup_attempts: int = 3
+
+
 class LoggingConfig(BaseModel):
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     format: Literal["json", "console"] = "json"
@@ -256,6 +279,7 @@ class Settings(BaseModel):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     internal_api: InternalApiConfig
     outbound: OutboundConfig = Field(default_factory=OutboundConfig)
+    poller: PollerConfig = Field(default_factory=PollerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     partners_file: str
 

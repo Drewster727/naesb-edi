@@ -94,6 +94,23 @@ outbound:
   retry_schedule_seconds: [0, 900, 2700]
   worker_poll_interval_seconds: 15
 
+# File-drop outbound entry point (app/poller.py, the `poller` service in
+# docker-compose.yml). Watches base_dir/<partner-duns>/ for raw, unencrypted
+# EDI files, encrypts + enqueues each one exactly like POST /outbound/send
+# does, then moves the file to base_dir/<duns>/processed/ once it's been
+# handed to outbound_jobs -- NOT once it's actually delivered. Delivery
+# outcome (including Exchange Failure after the usual 3 attempts) is only
+# ever visible via GET /outbound/jobs/{id} and logs, never the filesystem.
+# A file that fails before reaching the queue (unreadable, bad partner
+# crypto config, DB unavailable) is retried up to max_pickup_attempts times
+# before moving to base_dir/<duns>/error/.
+poller:
+  enabled: false
+  base_dir: /data/outbound
+  poll_interval_seconds: 15
+  quiet_period_seconds: 60   # a file must be unmodified this long before it's picked up
+  max_pickup_attempts: 3
+
 logging:
   level: INFO   # DEBUG | INFO | WARNING | ERROR | CRITICAL
   format: json  # json | console

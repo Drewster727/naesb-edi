@@ -1,6 +1,5 @@
 import base64
 import binascii
-import hashlib
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,9 +16,9 @@ from app.dependencies import (
     get_tracker,
 )
 from app.envelope.fields import InputFormat
+from app.outbound.enqueue import enqueue_outbound
 from app.partners import PartnerRegistry
 from app.settings import Settings
-from app.tracking.models import MessageRecord, OutboundJob
 from app.tracking.repository import MessageTracker, OutboundJobRepository
 
 router = APIRouter()
@@ -74,49 +73,19 @@ async def trigger_send(
     except binascii.Error as exc:
         raise HTTPException(status_code=400, detail=f"invalid payload_base64: {exc}") from exc
 
-    version = (
-        partner.envelope_overrides.version if partner.envelope_overrides else None
-    ) or settings.envelope.default_version
-
-    # Encrypt once; the same ciphertext (and content digest) is reused by
-    # the worker across every retry attempt, so partner-side dedup still
-    # works.
-    encrypted = gpg.encrypt_and_sign(
+    job_id = await enqueue_outbound(
         payload,
-        recipient_fingerprint=fingerprints[partner.name],
-        signer_fingerprint=fingerprints["_self"],
-        passphrase=settings.crypto.passphrase,
-    )
-    content_digest = hashlib.sha256(encrypted).hexdigest()
-
-    message_id = await tracker.create(
-        MessageRecord(
-            direction="outbound",
-            partner_name=partner.name,
-            content_digest=content_digest,
-            transaction_set=body.transaction_set,
-            input_format=body.input_format.value,
-            refnum=body.refnum,
-            refnum_orig=body.refnum_orig,
-            status="queued",
-        )
-    )
-
-    job = OutboundJob(
-        id=None,
-        partner_name=partner.name,
-        from_id=settings.identity.duns,
-        to_id=partner.duns,
-        version=version,
-        input_format=body.input_format.value,
+        partner=partner,
+        input_format=body.input_format,
         transaction_set=body.transaction_set,
         refnum=body.refnum,
         refnum_orig=body.refnum_orig,
-        payload_ciphertext=encrypted,
-        content_digest=content_digest,
-        message_id=message_id,
+        settings=settings,
+        gpg=gpg,
+        fingerprints=fingerprints,
+        tracker=tracker,
+        jobs=jobs,
     )
-    job_id = await jobs.create(job)
 
     return SendAcceptedResponse(job_id=job_id, status="queued")
 

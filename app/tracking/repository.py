@@ -267,3 +267,30 @@ class OutboundJobRepository:
                 "updated_at=now() WHERE id=%s",
                 (error_description, job_id),
             )
+
+
+class PartnerRefnumRepository:
+    """Assigns refnum values for outbound messages that have no API caller to
+    supply one -- currently just the file-drop poller (app/poller.py), for
+    partners configured with envelope_overrides.use_refnum: true. Backed by
+    `partner_refnum_counters` (db/migrations/0005_partner_refnum_counters.sql),
+    a simple per-partner monotonic counter."""
+
+    def __init__(self, pool: AsyncConnectionPool):
+        self.pool = pool
+
+    async def next_refnum(self, partner_name: str) -> str:
+        async with self.pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO partner_refnum_counters (partner_name, next_refnum)
+                VALUES (%s, 2)
+                ON CONFLICT (partner_name) DO UPDATE
+                    SET next_refnum = partner_refnum_counters.next_refnum + 1
+                RETURNING next_refnum - 1
+                """,
+                (partner_name,),
+            )
+            row = await cur.fetchone()
+            assert row is not None
+            return str(row[0])

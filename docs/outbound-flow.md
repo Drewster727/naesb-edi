@@ -14,6 +14,49 @@ Failure). Splitting these means a retry window that can span up to two hours nev
 the caller's HTTP request, and retry state survives a worker restart mid-window because
 it's persisted in `outbound_jobs`, not held in memory (`app/worker.py:1-13`).
 
+## 0. Alternative entry point: file-drop via `app/poller.py`
+
+Besides `POST /outbound/send` (§1 below), a raw, unencrypted EDI file can be handed to
+this gateway by simply writing it to disk. `app/poller.py` (the `poller` service in
+`docker-compose.yml`, `python -m app.poller`) watches `settings.poller.base_dir` for
+files dropped into partner-DUNS-named subfolders:
+
+```
+<base_dir>/<duns>/                 -- drop a raw, unencrypted EDI file here
+<base_dir>/<duns>/processed/       -- moved here once handed to outbound_jobs
+<base_dir>/<duns>/error/           -- moved here if pickup fails repeatedly
+```
+
+Each poll cycle (`settings.poller.poll_interval_seconds`), for every DUNS subfolder that
+matches a configured partner (`app/partners.py::PartnerRegistry.get_by_duns()`), any file
+that hasn't been modified for at least `settings.poller.quiet_period_seconds` (default
+60s -- long enough that a writer still streaming the file to disk is never read mid-write)
+is picked up and passed through `app/outbound/enqueue.py::enqueue_outbound()` -- the exact
+same encrypt-and-enqueue logic `trigger_send()` uses (see §1). `input_format` is always
+`X12`; `transaction_set` is left unset; `refnum` is auto-assigned from a new per-partner
+counter (`partner_refnum_counters`, via `PartnerRefnumRepository`) for any partner with
+`envelope_overrides.use_refnum: true` -- there's no API caller here to supply one.
+
+**`processed/` means "enqueued", not "delivered".** The file moves the moment
+`enqueue_outbound()` returns a job ID -- mirroring `POST /outbound/send`'s own
+fire-and-forget `202` semantics (§1). The job's actual delivery outcome, including the
+existing 3-attempt Exchange-Failure window (§5), is tracked purely in
+`outbound_jobs`/`messages` and structured logs (`poller_file_enqueued`, and later
+`outbound_delivered`/`outbound_rejected_by_partner`/`outbound_exchange_failure` from
+`app/worker.py`) -- it is **never** reflected back onto the filesystem. A file in
+`processed/` can still end up an Exchange Failure; check `outbound_jobs`/logs for the
+real outcome, not folder placement.
+
+`error/` is reserved for failures *before* a file reaches `outbound_jobs` at all --
+unreadable file, unrecognized/misconfigured partner crypto (e.g. missing PGP key),
+Postgres unavailable. These are retried up to `settings.poller.max_pickup_attempts` times
+(in-memory count, per poller process lifetime) before the file moves to `error/` and a
+`poller_file_errored` event is logged at `ERROR`.
+
+A DUNS subfolder that doesn't match any configured partner is left untouched, with a
+rate-limited `poller_unknown_duns` warning -- it self-heals once the partner is added to
+`partners.yaml`.
+
 ## 1. Enqueue: `POST /outbound/send`
 
 `app/api/send.py::trigger_send()` (lines 52-119). Request body (`SendRequest`, lines
@@ -159,6 +202,10 @@ Schema in `app/partners.py:66-85`, real values in `config/partners.yaml` (exampl
 - `app/outbound/client.py`, `app/worker.py` — the pipeline implementation this document
   describes.
 - `app/api/send.py` — the enqueue endpoint.
+- `app/poller.py`, `app/outbound/filewatch.py`, `app/outbound/enqueue.py` — the file-drop
+  entry point described in §0.
+- `tests/test_poller.py`, `tests/test_filewatch.py` — worked examples for the file-drop
+  path (pickup success, pickup failure/retry/error, unknown DUNS, quiet-period gating).
 - `docs/inbound-flow.md` — the mirror-image flow when we're the receiver; several steps
   here (envelope construction, PGP-MIME wrapping, signed-receipt parsing) reuse the exact
   same code either side uses when playing the other role.

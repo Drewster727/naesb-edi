@@ -35,6 +35,23 @@ services:
       postgres:
         condition: service_healthy
 
+  poller:
+    build: .
+    command: ["python", "-m", "app.poller"]
+    env_file:
+      - config/.env
+    environment:
+      NAESB_CONFIG_PATH: /app/config/config.yaml
+      NAESB_DATABASE_URL: postgresql://naesb:naesb@postgres:5432/naesb
+    volumes:
+      - ./config:/app/config:ro
+      - gnupg_data:/data/gnupg
+      - outbound_data:/data/outbound
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -61,5 +78,6 @@ services:
 volumes:
   gnupg_data:
   inbound_data:
+  outbound_data:
   pg_data:
   minio_data:
